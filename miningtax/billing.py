@@ -1,0 +1,208 @@
+from decimal import Decimal
+
+from django.utils import timezone
+
+from .models import OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental, AllianceBillingRecord
+
+
+# Default-Steuersatz, falls für eine Kategorie noch kein TaxRate-Eintrag existiert
+DEFAULT_TAX_RATE = Decimal('10.00')
+
+
+def get_ore_category(type_id):
+    try:
+        return OreCategory.objects.get(type_id=type_id).category
+    except OreCategory.DoesNotExist:
+        return 'Default'
+
+
+def get_tax_rate(category):
+    try:
+        rate_obj = TaxRate.objects.get(ore_category=category)
+        return rate_obj.tax_rate
+    except TaxRate.DoesNotExist:
+        return DEFAULT_TAX_RATE
+
+
+def is_excluded_by_fleet_session(entry, ore_category):
+    entry_datetime = timezone.make_aware(
+        timezone.datetime.combine(entry.date, timezone.datetime.min.time())
+    )
+    matching_sessions = FleetSession.objects.filter(
+        exclude_from_billing=True,
+        start_time__lte=entry_datetime,
+        end_time__gte=entry_datetime,
+    )
+    for session in matching_sessions:
+        if session.ore_type_id and session.ore_type_id == entry.type_id:
+            return True
+        if session.ore_category and session.ore_category == ore_category:
+            return True
+        if not session.ore_type_id and not session.ore_category:
+            return True
+    return False
+
+
+def is_excluded_by_alliance_moon(entry):
+    if not entry.solar_system_name:
+        return False
+    for moon in AllianceMoon.objects.filter(is_tax_free=True):
+        if moon.solar_system_name and moon.solar_system_name.lower() in entry.solar_system_name.lower():
+            return True
+    return False
+
+
+def is_excluded_by_moon_rental(entry, corporation):
+    if not entry.solar_system_name or not corporation:
+        return False
+    return MoonRental.objects.filter(
+        corporation=corporation,
+        active=True,
+        structure_name__iexact=entry.solar_system_name
+    ).exists()
+
+
+def calculate_entry_tax(entry, corporation=None):
+    category = get_ore_category(entry.type_id)
+
+    excluded = (
+        is_excluded_by_fleet_session(entry, category)
+        or is_excluded_by_alliance_moon(entry)
+        or is_excluded_by_moon_rental(entry, corporation)
+    )
+
+    if excluded:
+        return {
+            'category': category,
+            'tax_rate': Decimal('0.00'),
+            'tax_amount': Decimal('0.00'),
+            'excluded': True,
+        }
+
+    tax_rate = get_tax_rate(category)
+    tax_amount = entry.total_value * (tax_rate / Decimal('100'))
+
+    return {
+        'category': category,
+        'tax_rate': tax_rate,
+        'tax_amount': tax_amount,
+        'excluded': False,
+    }
+
+
+def calculate_alliance_billing(year, month):
+    from allianceauth.eveonline.models import EveCorporationInfo
+    from .models import MiningLedgerEntry
+
+    entries = MiningLedgerEntry.objects.filter(
+        date__year=year, date__month=month
+    ).select_related('character', 'character__character_ownership__user')
+
+    corps_data = {}
+    alliance_totals = {'mined': Decimal('0'), 'tax': Decimal('0')}
+
+    for entry in entries:
+        corp = entry.character.corporation_id
+        corp_name = entry.character.corporation_name or 'Unbekannt'
+
+        tax_info = calculate_entry_tax(entry, corporation=_get_corp_info(corp))
+
+        if corp not in corps_data:
+            corps_data[corp] = {
+                'corp_name': corp_name,
+                'total_mined': Decimal('0'),
+                'total_tax': Decimal('0'),
+                'members': {},
+                'categories': {},
+            }
+
+        corp_entry = corps_data[corp]
+        corp_entry['total_mined'] += entry.total_value
+        corp_entry['total_tax'] += tax_info['tax_amount']
+
+        char_name = entry.character.character_name
+        if char_name not in corp_entry['members']:
+            corp_entry['members'][char_name] = {'mined': Decimal('0'), 'tax': Decimal('0')}
+        corp_entry['members'][char_name]['mined'] += entry.total_value
+        corp_entry['members'][char_name]['tax'] += tax_info['tax_amount']
+
+        cat = tax_info['category']
+        if cat not in corp_entry['categories']:
+            corp_entry['categories'][cat] = {'value': Decimal('0'), 'tax': Decimal('0'), 'rate': tax_info['tax_rate']}
+        corp_entry['categories'][cat]['value'] += entry.total_value
+        corp_entry['categories'][cat]['tax'] += tax_info['tax_amount']
+
+        alliance_totals['mined'] += entry.total_value
+        alliance_totals['tax'] += tax_info['tax_amount']
+
+    return {'corps': corps_data, 'totals': alliance_totals}
+
+
+def save_billing_record(corp_id, corp_data, year, month):
+    """
+    Speichert oder aktualisiert einen AllianceBillingRecord für eine Corp.
+    Wird beim "Als bezahlt markieren" aufgerufen falls noch kein Record existiert.
+    Gibt den Record zurück.
+    """
+    from allianceauth.eveonline.models import EveCorporationInfo
+
+    corp_obj = _get_corp_info(corp_id)
+    if not corp_obj:
+        return None
+
+    # Moon Rental Summe für diese Corp berechnen
+    rental_total = MoonRental.objects.filter(
+        corporation=corp_obj, active=True
+    ).aggregate(total=__import__('django.db.models', fromlist=['Sum']).Sum('monthly_fee'))['total'] or Decimal('0')
+
+    total_due = corp_data['total_tax'] + rental_total
+
+    record, _ = AllianceBillingRecord.objects.update_or_create(
+        corporation=corp_obj,
+        month=month,
+        year=year,
+        defaults={
+            'total_mined_value': corp_data['total_mined'],
+            'mining_tax_amount': corp_data['total_tax'],
+            'moon_rental_total': rental_total,
+            'total_due': total_due,
+            'category_snapshot': {
+                cat: {
+                    'value': str(data['value']),
+                    'tax': str(data['tax']),
+                    'rate': str(data['rate']),
+                }
+                for cat, data in corp_data['categories'].items()
+            },
+        }
+    )
+    return record
+
+
+def mark_corp_paid(corp_id, corp_data, year, month):
+    """
+    Speichert die Abrechnung (falls noch nicht vorhanden) und markiert sie als bezahlt.
+    Gibt den aktualisierten Record zurück.
+    """
+    record = save_billing_record(corp_id, corp_data, year, month)
+    if record:
+        record.paid = True
+        record.paid_at = timezone.now()
+        record.save(update_fields=['paid', 'paid_at'])
+    return record
+
+
+# Corp-Info Cache
+_corp_cache = {}
+
+
+def _get_corp_info(corp_id):
+    from allianceauth.eveonline.models import EveCorporationInfo
+    if corp_id in _corp_cache:
+        return _corp_cache[corp_id]
+    try:
+        corp = EveCorporationInfo.objects.get(corporation_id=corp_id)
+    except EveCorporationInfo.DoesNotExist:
+        corp = None
+    _corp_cache[corp_id] = corp
+    return corp

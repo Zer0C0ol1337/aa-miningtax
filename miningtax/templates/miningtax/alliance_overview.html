@@ -1,0 +1,159 @@
+{% extends "allianceauth/base-bs5.html" %}
+{% load i18n %}
+
+{% block page_title %}Alliance Mining Tax{% endblock %}
+
+{% block content %}
+<div class="container">
+
+    {# ── HEADER ────────────────────────────────────────────────────────────── #}
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>🏛️ Alliance Abrechnung — {{ month }}/{{ year }}</h1>
+        <div class="d-flex gap-2">
+            <a href="{% url 'miningtax:dashboard' %}" class="btn btn-outline-secondary">
+                ⛏️ Mein Ledger
+            </a>
+            <a href="{% url 'miningtax:settings' %}" class="btn btn-outline-secondary">
+                ⚙️ Einstellungen
+            </a>
+            <a href="{% url 'miningtax:download_all_corps_zip' %}?year={{ year }}&month={{ month }}"
+               class="btn btn-success">
+                📦 Alle als ZIP
+            </a>
+        </div>
+    </div>
+
+    {# Django-Messages #}
+    {% for message in messages %}
+    <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}success{% endif %} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+
+    {# ── MONATS-NAVIGATION ─────────────────────────────────────────────────── #}
+    <div class="d-flex gap-2 align-items-center mb-4">
+        {% if month == 1 %}
+            <a href="?year={{ year|add:"-1" }}&month=12" class="btn btn-sm btn-outline-primary">◀ Vormonat</a>
+        {% else %}
+            <a href="?year={{ year }}&month={{ month|add:"-1" }}" class="btn btn-sm btn-outline-primary">◀ Vormonat</a>
+        {% endif %}
+        <span class="fw-bold">{{ month }}/{{ year }}</span>
+        {% if month == 12 %}
+            <a href="?year={{ year|add:"1" }}&month=1" class="btn btn-sm btn-outline-primary">Nächster Monat ▶</a>
+        {% else %}
+            <a href="?year={{ year }}&month={{ month|add:"1" }}" class="btn btn-sm btn-outline-primary">Nächster Monat ▶</a>
+        {% endif %}
+    </div>
+
+    {# ── SUMMARY-KARTEN ────────────────────────────────────────────────────── #}
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <div class="text-muted">Gesamt Alliance Mining</div>
+                    <div class="fs-4">{{ totals.mined|floatformat:2 }} ISK</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <div class="text-muted">Gesamt Mining Tax</div>
+                    <div class="fs-4 text-danger">{{ totals.tax|floatformat:2 }} ISK</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ── CORP-KARTEN ───────────────────────────────────────────────────────── #}
+    {% for corp_id, corp in corps.items %}
+    <div class="card mb-3 {% if corp.paid %}border-success{% endif %}">
+        <div class="card-header d-flex justify-content-between align-items-center">
+
+            {# Linke Seite: aufklappbar #}
+            <div class="d-flex align-items-center gap-3 flex-grow-1"
+                 data-bs-toggle="collapse" href="#corp-{{ corp_id }}"
+                 role="button" style="cursor:pointer">
+                <strong>{{ corp.corp_name }}</strong>
+                {% if corp.paid %}
+                    <span class="badge bg-success">
+                        ✅ Bezahlt {% if corp.paid_at %}— {{ corp.paid_at|date:"d.m.Y" }}{% endif %}
+                    </span>
+                {% else %}
+                    <span class="badge bg-warning text-dark">⏳ Ausstehend</span>
+                {% endif %}
+                <span class="text-muted small">
+                    Abgebaut: {{ corp.total_mined|floatformat:2 }} ISK |
+                    <span class="text-danger">Steuer: {{ corp.total_tax|floatformat:2 }} ISK</span>
+                </span>
+            </div>
+
+            {# Rechte Seite: Buttons #}
+            <div class="d-flex gap-2 ms-3">
+                {# PDF-Download #}
+                <a href="{% url 'miningtax:download_corp_pdf' corp_id %}?year={{ year }}&month={{ month }}"
+                   class="btn btn-sm btn-outline-primary">
+                    📄 PDF
+                </a>
+
+                {# Als bezahlt markieren — nur wenn noch nicht bezahlt #}
+                {% if not corp.paid %}
+                <form method="post" action="{% url 'miningtax:mark_paid' corp_id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="year" value="{{ year }}">
+                    <input type="hidden" name="month" value="{{ month }}">
+                    <button type="submit" class="btn btn-sm btn-success"
+                            onclick="return confirm('{{ corp.corp_name }} für {{ month }}/{{ year }} als bezahlt markieren?')">
+                        ✅ Als bezahlt markieren
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="collapse" id="corp-{{ corp_id }}">
+            <div class="card-body">
+
+                <h6>Nach Kategorie</h6>
+                <table class="table table-sm">
+                    <thead>
+                        <tr><th>Kategorie</th><th>Steuersatz</th><th>Wert</th><th>Steuer</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for cat, data in corp.categories.items %}
+                        <tr>
+                            <td>{{ cat }}</td>
+                            <td>{{ data.rate }}%</td>
+                            <td>{{ data.value|floatformat:2 }} ISK</td>
+                            <td>{{ data.tax|floatformat:2 }} ISK</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+
+                <h6>Mitglieder</h6>
+                <table class="table table-sm">
+                    <thead>
+                        <tr><th>Spieler</th><th>Abgebaut</th><th>Steuer</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for name, data in corp.members.items %}
+                        <tr>
+                            <td>{{ name }}</td>
+                            <td>{{ data.mined|floatformat:2 }} ISK</td>
+                            <td>{{ data.tax|floatformat:2 }} ISK</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+
+            </div>
+        </div>
+    </div>
+    {% empty %}
+    <p class="text-muted">Keine Daten für diesen Monat.</p>
+    {% endfor %}
+
+</div>
+{% endblock %}
