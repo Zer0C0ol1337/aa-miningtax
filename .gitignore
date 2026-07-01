@@ -13,3 +13,4 @@ db.sqlite3
 .tox/
 .coverage
 htmlcov/
+*:Zone.Identifier
