@@ -16,10 +16,6 @@
                 ⚙️ Einstellungen
             </a>
             {% endif %}
-            <form method="post" action="{% url 'miningtax:sync_now' %}">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-primary">🔄 Jetzt synchronisieren</button>
-            </form>
         </div>
     </div>
 
@@ -76,7 +72,7 @@
             {% empty %}
             <tr>
                 <td colspan="8" class="text-center text-muted">
-                    Keine Mining-Daten für diesen Monat — klicke auf "Jetzt synchronisieren".
+                    Keine Mining-Daten für diesen Monat. Daten werden automatisch täglich synchronisiert.
                 </td>
             </tr>
             {% endfor %}

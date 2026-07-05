@@ -209,7 +209,8 @@ def _get_location_name_db_first(location_id, token, esi):
 # ─── ALLE CHARACTERS SYNCT ───────────────────────────────────────────────────
 
 def sync_all_characters():
-    """Synct alle Characters mit gültigem Mining-Token."""
+    """Synct alle Characters aus Corptools-DB (kein ESI-Token nötig).
+    Fallback auf ESI-Token-Tabelle wenn Corptools nicht installiert ist."""
     from allianceauth.eveonline.models import EveCharacter
 
     # Versuche zuerst über Corptools alle Characters zu holen
