@@ -1,13 +1,12 @@
 {% extends 'allianceauth/base-bs5.html' %}
 {% load i18n %}
 
-{% block title %}Mining Tax – Einstellungen{% endblock %}
+{% block title %}{% trans "Mining Tax Settings" %}{% endblock %}
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <h2 class="mb-4"><i class="fas fa-cog"></i> Mining Tax – Einstellungen</h2>
+  <h2 class="mb-4"><i class="fas fa-cog"></i> {% trans "Mining Tax Settings" %}</h2>
 
-  {# Django-Messages (Erfolg / Fehler) #}
   {% for message in messages %}
     <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}success{% endif %} alert-dismissible fade show" role="alert">
       {{ message }}
@@ -15,41 +14,37 @@
     </div>
   {% endfor %}
 
-  {# ── TAB-NAVIGATION ─────────────────────────────────────────────────────── #}
   <ul class="nav nav-tabs mb-4" id="settingsTabs" role="tablist">
     <li class="nav-item">
       <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-taxrates">
-        <i class="fas fa-percent"></i> Steuersätze
+        <i class="fas fa-percent"></i> {% trans "Tax Rates" %}
       </button>
     </li>
     <li class="nav-item">
       <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-rentals">
-        <i class="fas fa-moon"></i> Moon Rentals
+        <i class="fas fa-moon"></i> {% trans "Moon Rentals" %}
       </button>
     </li>
     <li class="nav-item">
       <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-moons">
-        <i class="fas fa-globe"></i> Alliance-Monde
+        <i class="fas fa-globe"></i> {% trans "Alliance Moons" %}
       </button>
     </li>
   </ul>
 
   <div class="tab-content">
 
-    {# ══════════════════════════════════════════════════════════════════════════
-       TAB 1: STEUERSÄTZE
-       Jede Kategorie hat ein eigenes Mini-Formular (Inline-Edit).
-    ══════════════════════════════════════════════════════════════════════════ #}
+    {# TAB 1: TAX RATES #}
     <div class="tab-pane fade show active" id="tab-taxrates">
       <div class="card">
-        <div class="card-header"><strong>Steuersätze pro Erz-Kategorie</strong></div>
+        <div class="card-header"><strong>{% trans "Tax Rates per Ore Category" %}</strong></div>
         <div class="card-body p-0">
           <table class="table table-hover mb-0">
             <thead class="table-dark">
               <tr>
-                <th>Kategorie</th>
-                <th>Steuersatz (%)</th>
-                <th>Beschreibung</th>
+                <th>{% trans "Category" %}</th>
+                <th>{% trans "Tax Rate" %} (%)</th>
+                <th>{% trans "Description" %}</th>
                 <th style="width:120px"></th>
               </tr>
             </thead>
@@ -63,13 +58,13 @@
                   <td class="align-middle">{{ form.description }}</td>
                   <td class="align-middle">
                     <button type="submit" class="btn btn-sm btn-primary">
-                      <i class="fas fa-save"></i> Speichern
+                      <i class="fas fa-save"></i> {% trans "Save" %}
                     </button>
                   </td>
                 </form>
               </tr>
               {% empty %}
-              <tr><td colspan="4" class="text-center text-muted py-3">Keine Steuersätze konfiguriert.</td></tr>
+              <tr><td colspan="4" class="text-center text-muted py-3">{% trans "No tax rates configured." %}</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -77,22 +72,19 @@
       </div>
     </div>
 
-    {# ══════════════════════════════════════════════════════════════════════════
-       TAB 2: MOON RENTALS
-       Liste bestehender Verträge + Formular zum Anlegen neuer Verträge.
-    ══════════════════════════════════════════════════════════════════════════ #}
+    {# TAB 2: MOON RENTALS #}
     <div class="tab-pane fade" id="tab-rentals">
       <div class="card mb-4">
-        <div class="card-header"><strong>Bestehende Moon Rentals</strong></div>
+        <div class="card-header"><strong>{% trans "Existing Moon Rentals" %}</strong></div>
         <div class="card-body p-0">
           <table class="table table-hover mb-0">
             <thead class="table-dark">
               <tr>
-                <th>Corporation</th>
-                <th>Mond</th>
-                <th>Struktur-Name (Ledger)</th>
-                <th>Monatliche Gebühr</th>
-                <th>Aktiv</th>
+                <th>{% trans "Corporation" %}</th>
+                <th>{% trans "Moon" %}</th>
+                <th>{% trans "Structure Name (Ledger)" %}</th>
+                <th>{% trans "Monthly Fee" %}</th>
+                <th>{% trans "Active" %}</th>
                 <th style="width:100px"></th>
               </tr>
             </thead>
@@ -105,14 +97,14 @@
                 <td class="align-middle">{{ rental.monthly_fee|floatformat:0 }} ISK</td>
                 <td class="align-middle">
                   {% if rental.active %}
-                    <span class="badge bg-success">Aktiv</span>
+                    <span class="badge bg-success">{% trans "Active" %}</span>
                   {% else %}
-                    <span class="badge bg-secondary">Inaktiv</span>
+                    <span class="badge bg-secondary">{% trans "Inactive" %}</span>
                   {% endif %}
                 </td>
                 <td class="align-middle">
                   <form method="post" action="{% url 'miningtax:settings_delete_rental' rental.pk %}"
-                        onsubmit="return confirm('Rental für {{ rental.corporation.corporation_name }} wirklich löschen?')">
+                        onsubmit="return confirm('{% trans "Really delete rental for" %} {{ rental.corporation.corporation_name }}?')">
                     {% csrf_token %}
                     <button type="submit" class="btn btn-sm btn-danger">
                       <i class="fas fa-trash"></i>
@@ -121,46 +113,45 @@
                 </td>
               </tr>
               {% empty %}
-              <tr><td colspan="6" class="text-center text-muted py-3">Keine Moon Rentals vorhanden.</td></tr>
+              <tr><td colspan="6" class="text-center text-muted py-3">{% trans "No moon rentals found." %}</td></tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       </div>
 
-      {# Neues Rental anlegen #}
       <div class="card">
-        <div class="card-header"><strong>Neues Moon Rental anlegen</strong></div>
+        <div class="card-header"><strong>{% trans "Add New Moon Rental" %}</strong></div>
         <div class="card-body">
           <form method="post" action="{% url 'miningtax:settings_add_rental' %}">
             {% csrf_token %}
             <div class="row g-3">
               <div class="col-md-3">
-                <label class="form-label">Corporation</label>
+                <label class="form-label">{% trans "Corporation" %}</label>
                 {{ rental_form.corporation }}
               </div>
               <div class="col-md-3">
-                <label class="form-label">Mond-Name</label>
+                <label class="form-label">{% trans "Moon Name" %}</label>
                 {{ rental_form.moon_name }}
               </div>
               <div class="col-md-3">
-                <label class="form-label">Struktur-Name (Ledger-Match)</label>
+                <label class="form-label">{% trans "Structure Name (Ledger Match)" %}</label>
                 {{ rental_form.structure_name }}
               </div>
               <div class="col-md-2">
-                <label class="form-label">Monatliche Gebühr (ISK)</label>
+                <label class="form-label">{% trans "Monthly Fee (ISK)" %}</label>
                 {{ rental_form.monthly_fee }}
               </div>
               <div class="col-md-1 d-flex align-items-end">
                 <div class="form-check mb-2">
                   {{ rental_form.active }}
-                  <label class="form-check-label">Aktiv</label>
+                  <label class="form-check-label">{% trans "Active" %}</label>
                 </div>
               </div>
             </div>
             <div class="mt-3">
               <button type="submit" class="btn btn-success">
-                <i class="fas fa-plus"></i> Rental anlegen
+                <i class="fas fa-plus"></i> {% trans "Add Rental" %}
               </button>
             </div>
           </form>
@@ -168,22 +159,19 @@
       </div>
     </div>
 
-    {# ══════════════════════════════════════════════════════════════════════════
-       TAB 3: ALLIANCE-MONDE
-       Liste aller Monde + Inline-Edit-Buttons + Formular zum Anlegen.
-    ══════════════════════════════════════════════════════════════════════════ #}
+    {# TAB 3: ALLIANCE MOONS #}
     <div class="tab-pane fade" id="tab-moons">
       <div class="card mb-4">
-        <div class="card-header"><strong>Alliance-Monde</strong></div>
+        <div class="card-header"><strong>{% trans "Alliance Moons" %}</strong></div>
         <div class="card-body p-0">
           <table class="table table-hover mb-0">
             <thead class="table-dark">
               <tr>
-                <th>Mond-Name</th>
-                <th>System</th>
-                <th>Kategorie</th>
-                <th>Typ</th>
-                <th>Steuerfrei</th>
+                <th>{% trans "Moon Name" %}</th>
+                <th>{% trans "System" %}</th>
+                <th>{% trans "Category" %}</th>
+                <th>{% trans "Type" %}</th>
+                <th>{% trans "Tax Free" %}</th>
                 <th style="width:160px"></th>
               </tr>
             </thead>
@@ -195,20 +183,19 @@
                 <td class="align-middle"><span class="badge bg-info text-dark">{{ moon.ore_category }}</span></td>
                 <td class="align-middle">
                   {% if moon.moon_type == 'event' %}
-                    <span class="badge bg-warning text-dark">Event</span>
+                    <span class="badge bg-warning text-dark">{% trans "Event" %}</span>
                   {% else %}
-                    <span class="badge bg-secondary">Public</span>
+                    <span class="badge bg-secondary">{% trans "Public" %}</span>
                   {% endif %}
                 </td>
                 <td class="align-middle">
                   {% if moon.is_tax_free %}
-                    <span class="badge bg-success">Ja</span>
+                    <span class="badge bg-success">{% trans "Yes" %}</span>
                   {% else %}
-                    <span class="badge bg-danger">Nein</span>
+                    <span class="badge bg-danger">{% trans "No" %}</span>
                   {% endif %}
                 </td>
                 <td class="align-middle d-flex gap-1">
-                  {# Edit-Button öffnet ein Modal mit vorausgefülltem Formular #}
                   <button class="btn btn-sm btn-secondary"
                           data-bs-toggle="modal"
                           data-bs-target="#editMoonModal"
@@ -221,7 +208,7 @@
                     <i class="fas fa-edit"></i>
                   </button>
                   <form method="post" action="{% url 'miningtax:settings_delete_moon' moon.pk %}"
-                        onsubmit="return confirm('Mond {{ moon.name }} wirklich löschen?')">
+                        onsubmit="return confirm('{% trans "Really delete moon" %} {{ moon.name }}?')">
                     {% csrf_token %}
                     <button type="submit" class="btn btn-sm btn-danger">
                       <i class="fas fa-trash"></i>
@@ -230,46 +217,45 @@
                 </td>
               </tr>
               {% empty %}
-              <tr><td colspan="6" class="text-center text-muted py-3">Keine Monde konfiguriert.</td></tr>
+              <tr><td colspan="6" class="text-center text-muted py-3">{% trans "No moons configured." %}</td></tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       </div>
 
-      {# Neuen Mond anlegen #}
       <div class="card">
-        <div class="card-header"><strong>Neuen Mond anlegen</strong></div>
+        <div class="card-header"><strong>{% trans "Add New Moon" %}</strong></div>
         <div class="card-body">
           <form method="post" action="{% url 'miningtax:settings_add_moon' %}">
             {% csrf_token %}
             <div class="row g-3">
               <div class="col-md-3">
-                <label class="form-label">Mond-Name</label>
+                <label class="form-label">{% trans "Moon Name" %}</label>
                 {{ moon_form.name }}
               </div>
               <div class="col-md-2">
-                <label class="form-label">Sonnensystem</label>
+                <label class="form-label">{% trans "Solar System" %}</label>
                 {{ moon_form.solar_system_name }}
               </div>
               <div class="col-md-2">
-                <label class="form-label">Erz-Kategorie</label>
+                <label class="form-label">{% trans "Ore Category" %}</label>
                 {{ moon_form.ore_category }}
               </div>
               <div class="col-md-2">
-                <label class="form-label">Mond-Typ</label>
+                <label class="form-label">{% trans "Moon Type" %}</label>
                 {{ moon_form.moon_type }}
               </div>
               <div class="col-md-1 d-flex align-items-end">
                 <div class="form-check mb-2">
                   {{ moon_form.is_tax_free }}
-                  <label class="form-check-label">Steuerfrei</label>
+                  <label class="form-check-label">{% trans "Tax Free" %}</label>
                 </div>
               </div>
             </div>
             <div class="mt-3">
               <button type="submit" class="btn btn-success">
-                <i class="fas fa-plus"></i> Mond anlegen
+                <i class="fas fa-plus"></i> {% trans "Add Moon" %}
               </button>
             </div>
           </form>
@@ -277,30 +263,30 @@
       </div>
     </div>
 
-  </div>{# /tab-content #}
+  </div>
 </div>
 
-{# ── EDIT-MOND-MODAL ────────────────────────────────────────────────────────── #}
+{# EDIT MOON MODAL #}
 <div class="modal fade" id="editMoonModal" tabindex="-1">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title">Mond bearbeiten</h5>
+        <h5 class="modal-title">{% trans "Edit Moon" %}</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="post" id="editMoonForm" action="">
         {% csrf_token %}
         <div class="modal-body">
           <div class="mb-3">
-            <label class="form-label">Mond-Name</label>
+            <label class="form-label">{% trans "Moon Name" %}</label>
             <input type="text" name="name" id="edit_moon_name" class="form-control" required>
           </div>
           <div class="mb-3">
-            <label class="form-label">Sonnensystem</label>
+            <label class="form-label">{% trans "Solar System" %}</label>
             <input type="text" name="solar_system_name" id="edit_moon_system" class="form-control">
           </div>
           <div class="mb-3">
-            <label class="form-label">Erz-Kategorie</label>
+            <label class="form-label">{% trans "Ore Category" %}</label>
             <select name="ore_category" id="edit_moon_category" class="form-control">
               {% for val, label in moon_form.ore_category.field.choices %}
                 <option value="{{ val }}">{{ label }}</option>
@@ -308,21 +294,21 @@
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Mond-Typ</label>
+            <label class="form-label">{% trans "Moon Type" %}</label>
             <select name="moon_type" id="edit_moon_type" class="form-control">
-              <option value="public">Public</option>
-              <option value="event">Event</option>
+              <option value="public">{% trans "Public" %}</option>
+              <option value="event">{% trans "Event" %}</option>
             </select>
           </div>
           <div class="form-check">
             <input type="checkbox" name="is_tax_free" id="edit_moon_taxfree" class="form-check-input" value="true">
-            <label class="form-check-label">Steuerfrei</label>
+            <label class="form-check-label">{% trans "Tax Free" %}</label>
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{% trans "Cancel" %}</button>
           <button type="submit" class="btn btn-primary">
-            <i class="fas fa-save"></i> Speichern
+            <i class="fas fa-save"></i> {% trans "Save" %}
           </button>
         </div>
       </form>
@@ -330,16 +316,11 @@
   </div>
 </div>
 
-{# ── MODAL-JAVASCRIPT: befüllt das Edit-Modal mit den Daten des gewählten Monds ── #}
 <script>
 document.getElementById('editMoonModal').addEventListener('show.bs.modal', function(event) {
   const btn = event.relatedTarget;
   const moonId = btn.getAttribute('data-moon-id');
-
-  // Action-URL des Formulars auf den konkreten Mond setzen
   document.getElementById('editMoonForm').action = `/miningtax/settings/moon/${moonId}/edit/`;
-
-  // Felder vorausfüllen
   document.getElementById('edit_moon_name').value     = btn.getAttribute('data-moon-name');
   document.getElementById('edit_moon_system').value   = btn.getAttribute('data-moon-system');
   document.getElementById('edit_moon_category').value = btn.getAttribute('data-moon-category');

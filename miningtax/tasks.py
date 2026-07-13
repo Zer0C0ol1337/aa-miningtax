@@ -1,23 +1,52 @@
+import logging
+from datetime import date
+
 from celery import shared_task
 
 from .services import sync_all_characters, sync_all_corp_observers, update_market_prices
 
+logger = logging.getLogger(__name__)
 
-# Täglicher Sync: persönliche Ledger (via Corptools oder ESI) + Corp Observer + Marktpreise
+
+# Täglicher Sync: persönliche Ledger + Corp Observer + Marktpreise + Billing Records
 @shared_task
 def daily_mining_sync():
-    # 1. Persönliche Mining-Ledger aller Characters
+    from .billing import save_billing_records_for_month
+
     synced_chars = sync_all_characters()
-
-    # 2. Corp Observer (Monde/Strukturen) — braucht Director-Token
-    #    Liefert genauere Daten: Struktur-Namen statt nur System-Namen
     synced_corps = sync_all_corp_observers()
-
-    # 3. Marktpreise aktualisieren
     priced = update_market_prices()
+
+    # Billing Records für den aktuellen Monat aktualisieren
+    today = date.today()
+    billing_saved = save_billing_records_for_month(today.year, today.month)
+
+    logger.info(
+        f'Daily sync: {synced_chars} persönliche, {synced_corps} Corp Observer, '
+        f'{priced} Preise, {billing_saved} Billing Records aktualisiert'
+    )
 
     return (
         f'{synced_chars} persönliche Einträge, '
         f'{synced_corps} Corp Observer Einträge, '
-        f'{priced} Preise aktualisiert'
+        f'{priced} Preise aktualisiert, '
+        f'{billing_saved} Billing Records gespeichert'
     )
+
+
+# Wird getriggert wenn ein neuer Character in Alliance Auth registriert wird
+@shared_task
+def sync_character_mining_task(character_id):
+    """Synct den Mining-Ledger eines einzelnen Characters asynchron."""
+    try:
+        from allianceauth.eveonline.models import EveCharacter
+        from .services import sync_character_mining
+
+        character = EveCharacter.objects.get(character_id=character_id)
+        synced = sync_character_mining(character)
+        logger.info(f'Auto-Sync für {character.character_name}: {synced} Einträge')
+        return synced
+
+    except Exception as e:
+        logger.warning(f'Auto-Sync für Character {character_id} fehlgeschlagen: {e}')
+        return 0

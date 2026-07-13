@@ -7,5 +7,7 @@ class MiningtaxConfig(AppConfig):
     label = 'miningtax'
 
     def ready(self):
-        # registriert unsere Hooks (Menü-Eintrag) bei Alliance Auth, sobald die App geladen ist
+        # Registriert Menü-Hooks bei Alliance Auth
         from . import auth_hooks  # noqa
+        # Registriert Signals (z.B. Auto-Sync bei neuem Character)
+        from . import signals  # noqa

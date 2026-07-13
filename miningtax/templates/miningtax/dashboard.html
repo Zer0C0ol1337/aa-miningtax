@@ -1,24 +1,24 @@
 {% extends "allianceauth/base-bs5.html" %}
 {% load i18n %}
 
-{% block page_title %}Mining Tax{% endblock %}
+{% block page_title %}{% trans "Mining Tax" %}{% endblock %}
 
 {% block content %}
 <div class="container">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h1>⛏️ Mining Tax — {{ month }}</h1>
+        <h1>⛏️ {% trans "Mining Tax" %} — {{ month }}</h1>
         <div class="d-flex gap-2">
             {% if is_officer %}
             <a href="{% url 'miningtax:alliance_overview' %}" class="btn btn-outline-secondary">
-                🏛️ Alliance Abrechnung
+                🏛️ {% trans "Alliance Billing" %}
             </a>
             <a href="{% url 'miningtax:settings' %}" class="btn btn-outline-secondary">
-                ⚙️ Einstellungen
+                ⚙️ {% trans "Settings" %}
             </a>
             <form method="post" action="{% url 'miningtax:sync_now' %}">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-outline-primary btn-sm">
-                    🔄 Manuell synchronisieren
+                    🔄 {% trans "Sync Now" %}
                 </button>
             </form>
             {% endif %}
@@ -29,7 +29,7 @@
         <div class="col-md-6">
             <div class="card">
                 <div class="card-body">
-                    <div class="text-muted">Gesamt abgebaut (Wert)</div>
+                    <div class="text-muted">{% trans "Total Mined (Value)" %}</div>
                     <div class="fs-4">{{ total_mined_value|floatformat:2 }} ISK</div>
                 </div>
             </div>
@@ -37,7 +37,7 @@
         <div class="col-md-6">
             <div class="card">
                 <div class="card-body">
-                    <div class="text-muted">Gesamtsteuer diesen Monat</div>
+                    <div class="text-muted">{% trans "Total Tax This Month" %}</div>
                     <div class="fs-4 text-danger">{{ total_tax|floatformat:2 }} ISK</div>
                 </div>
             </div>
@@ -47,14 +47,14 @@
     <table class="table table-striped">
         <thead>
             <tr>
-                <th>Datum</th>
-                <th>Character</th>
-                <th>System</th>
-                <th>Erz</th>
-                <th>Menge</th>
-                <th>Kategorie</th>
-                <th>Steuersatz</th>
-                <th>Steuer</th>
+                <th>{% trans "Date" %}</th>
+                <th>{% trans "Character" %}</th>
+                <th>{% trans "System" %}</th>
+                <th>{% trans "Ore" %}</th>
+                <th>{% trans "Quantity" %}</th>
+                <th>{% trans "Category" %}</th>
+                <th>{% trans "Tax Rate" %}</th>
+                <th>{% trans "Tax" %}</th>
             </tr>
         </thead>
         <tbody>
@@ -69,7 +69,7 @@
                 <td>{{ row.tax_rate }}%</td>
                 <td>
                     {% if row.excluded %}
-                        <span class="badge text-bg-success">Ausgeschlossen</span>
+                        <span class="badge text-bg-success">{% trans "Excluded" %}</span>
                     {% else %}
                         {{ row.tax_amount|floatformat:2 }} ISK
                     {% endif %}
@@ -78,7 +78,7 @@
             {% empty %}
             <tr>
                 <td colspan="8" class="text-center text-muted">
-                    Keine Mining-Daten für diesen Monat. Daten werden automatisch täglich synchronisiert.
+                    {% trans "No mining data for this month. Data is synced automatically every day." %}
                 </td>
             </tr>
             {% endfor %}

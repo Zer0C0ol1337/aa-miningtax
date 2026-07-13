@@ -1,14 +1,14 @@
 from datetime import date
 
-from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
 from django.core.exceptions import PermissionDenied
 from django.contrib import messages
 
 from .models import MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord
 from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
 from .services import sync_character_mining, update_market_prices, sync_all_corp_observers
-from .services import sync_character_mining, update_market_prices
 from .forms import TaxRateForm, MoonRentalForm, AllianceMoonForm
 
 
@@ -36,6 +36,20 @@ def check_access(test_func):
             return view_func(request, *args, **kwargs)
         return wrapped
     return decorator
+
+
+def _prev_month(year, month):
+    """Gibt (year, month) des Vormonats zurück."""
+    if month == 1:
+        return year - 1, 12
+    return year, month - 1
+
+
+def _next_month(year, month):
+    """Gibt (year, month) des nächsten Monats zurück."""
+    if month == 12:
+        return year + 1, 1
+    return year, month + 1
 
 
 # Persönliches Mining-Dashboard
@@ -88,10 +102,12 @@ def sync_now(request):
         except Exception as e:
             messages.warning(request, f'Sync für {character.character_name} fehlgeschlagen: {e}')
 
-    from .services import sync_all_corp_observers
     corp_synced = sync_all_corp_observers()
     priced = update_market_prices()
-    messages.success(request, f'✅ {total_synced} persönliche + {corp_synced} Corp Einträge synchronisiert, {priced} Preise aktualisiert')
+    messages.success(
+        request,
+        f'✅ {total_synced} persönliche + {corp_synced} Corp Einträge synchronisiert, {priced} Preise aktualisiert'
+    )
 
     return redirect('miningtax:dashboard')
 
@@ -123,11 +139,19 @@ def alliance_overview(request):
             'paid_at': record.paid_at if record else None,
         }
 
+    # Monatsnavigation in der View berechnen (nicht im Template)
+    prev_year, prev_month = _prev_month(year, month)
+    next_year, next_month = _next_month(year, month)
+
     context = {
         'corps': corps_with_status,
         'totals': data['totals'],
         'year': year,
         'month': month,
+        'prev_year': prev_year,
+        'prev_month': prev_month,
+        'next_year': next_year,
+        'next_month': next_month,
     }
     return render(request, 'miningtax/alliance_overview.html', context)
 
@@ -141,12 +165,11 @@ def mark_paid(request, corp_id):
     year = int(request.POST.get('year', date.today().year))
     month = int(request.POST.get('month', date.today().month))
 
-    # Aktuelle Abrechnung berechnen und als bezahlt speichern
     data = calculate_alliance_billing(year, month)
 
     if corp_id not in data['corps']:
         messages.error(request, '❌ Keine Daten für diese Corp in diesem Monat.')
-        return redirect(f"{request.path}?year={year}&month={month}")
+        return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
     corp_data = data['corps'][corp_id]
     record = mark_corp_paid(corp_id, corp_data, year, month)
@@ -159,7 +182,7 @@ def mark_paid(request, corp_id):
     else:
         messages.error(request, '❌ Corp nicht gefunden.')
 
-    return redirect(f"{'/'.join(request.build_absolute_uri().split('/')[:3])}/miningtax/alliance/?year={year}&month={month}")
+    return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
 
 # ─── SETTINGS-VIEWS ───────────────────────────────────────────────────────────

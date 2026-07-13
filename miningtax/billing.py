@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.db.models import Sum
 from django.utils import timezone
 
 from .models import OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental, AllianceBillingRecord
@@ -91,7 +92,6 @@ def calculate_entry_tax(entry, corporation=None):
 
 
 def calculate_alliance_billing(year, month):
-    from allianceauth.eveonline.models import EveCorporationInfo
     from .models import MiningLedgerEntry
 
     entries = MiningLedgerEntry.objects.filter(
@@ -138,26 +138,37 @@ def calculate_alliance_billing(year, month):
     return {'corps': corps_data, 'totals': alliance_totals}
 
 
+def save_billing_records_for_month(year, month):
+    """
+    Speichert AllianceBillingRecord für alle Corps eines Monats.
+    Wird täglich nach dem Sync aufgerufen um die Abrechnungen aktuell zu halten.
+    """
+    data = calculate_alliance_billing(year, month)
+    saved = 0
+    for corp_id, corp_data in data['corps'].items():
+        record = save_billing_record(corp_id, corp_data, year, month)
+        if record:
+            saved += 1
+    return saved
+
+
 def save_billing_record(corp_id, corp_data, year, month):
     """
     Speichert oder aktualisiert einen AllianceBillingRecord für eine Corp.
-    Wird beim "Als bezahlt markieren" aufgerufen falls noch kein Record existiert.
-    Gibt den Record zurück.
+    Überschreibt bestehende Records nur wenn noch nicht bezahlt.
     """
-    from allianceauth.eveonline.models import EveCorporationInfo
-
     corp_obj = _get_corp_info(corp_id)
     if not corp_obj:
         return None
 
-    # Moon Rental Summe für diese Corp berechnen
     rental_total = MoonRental.objects.filter(
         corporation=corp_obj, active=True
-    ).aggregate(total=__import__('django.db.models', fromlist=['Sum']).Sum('monthly_fee'))['total'] or Decimal('0')
+    ).aggregate(total=Sum('monthly_fee'))['total'] or Decimal('0')
 
     total_due = corp_data['total_tax'] + rental_total
 
-    record, _ = AllianceBillingRecord.objects.update_or_create(
+    # Nur aktualisieren wenn noch nicht bezahlt — bezahlte Records bleiben unverändert
+    record, created = AllianceBillingRecord.objects.get_or_create(
         corporation=corp_obj,
         month=month,
         year=year,
@@ -176,14 +187,28 @@ def save_billing_record(corp_id, corp_data, year, month):
             },
         }
     )
+
+    if not created and not record.paid:
+        # Noch nicht bezahlt — Daten aktualisieren
+        record.total_mined_value = corp_data['total_mined']
+        record.mining_tax_amount = corp_data['total_tax']
+        record.moon_rental_total = rental_total
+        record.total_due = total_due
+        record.category_snapshot = {
+            cat: {
+                'value': str(data['value']),
+                'tax': str(data['tax']),
+                'rate': str(data['rate']),
+            }
+            for cat, data in corp_data['categories'].items()
+        }
+        record.save()
+
     return record
 
 
 def mark_corp_paid(corp_id, corp_data, year, month):
-    """
-    Speichert die Abrechnung (falls noch nicht vorhanden) und markiert sie als bezahlt.
-    Gibt den aktualisierten Record zurück.
-    """
+    """Speichert die Abrechnung und markiert sie als bezahlt."""
     record = save_billing_record(corp_id, corp_data, year, month)
     if record:
         record.paid = True
