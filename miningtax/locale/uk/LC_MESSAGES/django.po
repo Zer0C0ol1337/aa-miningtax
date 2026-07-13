@@ -1,0 +1,317 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-13 19:03+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=4; plural=(n % 1 == 0 && n % 10 == 1 && n % 100 != "
+"11 ? 0 : n % 1 == 0 && n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % "
+"100 > 14) ? 1 : n % 1 == 0 && (n % 10 ==0 || (n % 10 >=5 && n % 10 <=9) || "
+"(n % 100 >=11 && n % 100 <=14 )) ? 2: 3);\n"
+
+#: auth_hooks.py:14 templates/miningtax/dashboard.html:4
+#: templates/miningtax/dashboard.html:9
+msgid "Mining Tax"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:4
+msgid "Alliance Mining Tax"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:11
+#: templates/miningtax/dashboard.html:13
+msgid "Alliance Billing"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:14
+msgid "My Ledger"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:17
+#: templates/miningtax/dashboard.html:16
+msgid "Settings"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:21
+msgid "Download All as ZIP"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:37
+#: templates/miningtax/alliance_overview.html:39
+msgid "Previous Month"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:43
+#: templates/miningtax/alliance_overview.html:45
+msgid "Next Month"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:54
+msgid "Total Alliance Mining"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:62
+msgid "Total Mining Tax"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:80
+msgid "Paid"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:83
+msgid "Pending"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:86
+#: templates/miningtax/alliance_overview.html:140
+msgid "Mined"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:87
+#: templates/miningtax/alliance_overview.html:120
+#: templates/miningtax/alliance_overview.html:141
+#: templates/miningtax/dashboard.html:57
+msgid "Tax"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:102
+msgid "Mark as paid for"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:103
+msgid "Mark as Paid"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:113
+msgid "By Category"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:117
+#: templates/miningtax/dashboard.html:55 templates/miningtax/settings.html:45
+#: templates/miningtax/settings.html:172
+msgid "Category"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:118
+#: templates/miningtax/dashboard.html:56 templates/miningtax/settings.html:46
+msgid "Tax Rate"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:119
+msgid "Value"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:135
+msgid "Members"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:139
+msgid "Player"
+msgstr ""
+
+#: templates/miningtax/alliance_overview.html:159
+msgid "No data for this month."
+msgstr ""
+
+#: templates/miningtax/dashboard.html:21
+msgid "Sync Now"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:32
+msgid "Total Mined (Value)"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:40
+msgid "Total Tax This Month"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:50
+msgid "Date"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:51
+msgid "Character"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:52 templates/miningtax/settings.html:171
+msgid "System"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:53
+msgid "Ore"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:54
+msgid "Quantity"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:72
+msgid "Excluded"
+msgstr ""
+
+#: templates/miningtax/dashboard.html:81
+msgid "No mining data for this month. Data is synced automatically every day."
+msgstr ""
+
+#: templates/miningtax/settings.html:4 templates/miningtax/settings.html:8
+msgid "Mining Tax Settings"
+msgstr ""
+
+#: templates/miningtax/settings.html:20
+msgid "Tax Rates"
+msgstr ""
+
+#: templates/miningtax/settings.html:25
+msgid "Moon Rentals"
+msgstr ""
+
+#: templates/miningtax/settings.html:30 templates/miningtax/settings.html:165
+msgid "Alliance Moons"
+msgstr ""
+
+#: templates/miningtax/settings.html:40
+msgid "Tax Rates per Ore Category"
+msgstr ""
+
+#: templates/miningtax/settings.html:47
+msgid "Description"
+msgstr ""
+
+#: templates/miningtax/settings.html:61 templates/miningtax/settings.html:311
+msgid "Save"
+msgstr ""
+
+#: templates/miningtax/settings.html:67
+msgid "No tax rates configured."
+msgstr ""
+
+#: templates/miningtax/settings.html:78
+msgid "Existing Moon Rentals"
+msgstr ""
+
+#: templates/miningtax/settings.html:83 templates/miningtax/settings.html:130
+msgid "Corporation"
+msgstr ""
+
+#: templates/miningtax/settings.html:84
+msgid "Moon"
+msgstr ""
+
+#: templates/miningtax/settings.html:85
+msgid "Structure Name (Ledger)"
+msgstr ""
+
+#: templates/miningtax/settings.html:86
+msgid "Monthly Fee"
+msgstr ""
+
+#: templates/miningtax/settings.html:87 templates/miningtax/settings.html:100
+#: templates/miningtax/settings.html:148
+msgid "Active"
+msgstr ""
+
+#: templates/miningtax/settings.html:102
+msgid "Inactive"
+msgstr ""
+
+#: templates/miningtax/settings.html:107
+msgid "Really delete rental for"
+msgstr ""
+
+#: templates/miningtax/settings.html:116
+msgid "No moon rentals found."
+msgstr ""
+
+#: templates/miningtax/settings.html:124
+msgid "Add New Moon Rental"
+msgstr ""
+
+#: templates/miningtax/settings.html:134 templates/miningtax/settings.html:170
+#: templates/miningtax/settings.html:234 templates/miningtax/settings.html:281
+msgid "Moon Name"
+msgstr ""
+
+#: templates/miningtax/settings.html:138
+msgid "Structure Name (Ledger Match)"
+msgstr ""
+
+#: templates/miningtax/settings.html:142
+msgid "Monthly Fee (ISK)"
+msgstr ""
+
+#: templates/miningtax/settings.html:154
+msgid "Add Rental"
+msgstr ""
+
+#: templates/miningtax/settings.html:173
+msgid "Type"
+msgstr ""
+
+#: templates/miningtax/settings.html:174 templates/miningtax/settings.html:252
+#: templates/miningtax/settings.html:305
+msgid "Tax Free"
+msgstr ""
+
+#: templates/miningtax/settings.html:186 templates/miningtax/settings.html:300
+msgid "Event"
+msgstr ""
+
+#: templates/miningtax/settings.html:188 templates/miningtax/settings.html:299
+msgid "Public"
+msgstr ""
+
+#: templates/miningtax/settings.html:193
+msgid "Yes"
+msgstr ""
+
+#: templates/miningtax/settings.html:195
+msgid "No"
+msgstr ""
+
+#: templates/miningtax/settings.html:211
+msgid "Really delete moon"
+msgstr ""
+
+#: templates/miningtax/settings.html:220
+msgid "No moons configured."
+msgstr ""
+
+#: templates/miningtax/settings.html:228
+msgid "Add New Moon"
+msgstr ""
+
+#: templates/miningtax/settings.html:238 templates/miningtax/settings.html:285
+msgid "Solar System"
+msgstr ""
+
+#: templates/miningtax/settings.html:242 templates/miningtax/settings.html:289
+msgid "Ore Category"
+msgstr ""
+
+#: templates/miningtax/settings.html:246 templates/miningtax/settings.html:297
+msgid "Moon Type"
+msgstr ""
+
+#: templates/miningtax/settings.html:258
+msgid "Add Moon"
+msgstr ""
+
+#: templates/miningtax/settings.html:274
+msgid "Edit Moon"
+msgstr ""
+
+#: templates/miningtax/settings.html:309
+msgid "Cancel"
+msgstr ""

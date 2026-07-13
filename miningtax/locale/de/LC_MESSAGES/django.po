@@ -1,0 +1,221 @@
+# German translations for Mining Tax Plugin
+msgid ""
+msgstr ""
+"Project-Id-Version: aa-miningtax\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-13 18:45+0200\n"
+"PO-Revision-Date: 2026-07-13 18:45+0200\n"
+"Last-Translator: Zer0C0ol1337\n"
+"Language-Team: German\n"
+"Language: de\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Mining Tax"
+msgstr "Mining Steuer"
+
+msgid "Alliance Mining Tax"
+msgstr "Alliance Mining Steuer"
+
+msgid "Alliance Billing"
+msgstr "Alliance Abrechnung"
+
+msgid "My Ledger"
+msgstr "Mein Ledger"
+
+msgid "Settings"
+msgstr "Einstellungen"
+
+msgid "Download All as ZIP"
+msgstr "Alle als ZIP herunterladen"
+
+msgid "Previous Month"
+msgstr "Vormonat"
+
+msgid "Next Month"
+msgstr "Nächster Monat"
+
+msgid "Total Alliance Mining"
+msgstr "Gesamt Alliance Mining"
+
+msgid "Total Mining Tax"
+msgstr "Gesamt Mining Steuer"
+
+msgid "Paid"
+msgstr "Bezahlt"
+
+msgid "Pending"
+msgstr "Ausstehend"
+
+msgid "Mined"
+msgstr "Abgebaut"
+
+msgid "Tax"
+msgstr "Steuer"
+
+msgid "Mark as paid for"
+msgstr "Als bezahlt markieren für"
+
+msgid "Mark as Paid"
+msgstr "Als bezahlt markieren"
+
+msgid "By Category"
+msgstr "Nach Kategorie"
+
+msgid "Category"
+msgstr "Kategorie"
+
+msgid "Tax Rate"
+msgstr "Steuersatz"
+
+msgid "Value"
+msgstr "Wert"
+
+msgid "Members"
+msgstr "Mitglieder"
+
+msgid "Player"
+msgstr "Spieler"
+
+msgid "No data for this month."
+msgstr "Keine Daten für diesen Monat."
+
+msgid "Sync Now"
+msgstr "Jetzt synchronisieren"
+
+msgid "Total Mined (Value)"
+msgstr "Gesamt abgebaut (Wert)"
+
+msgid "Total Tax This Month"
+msgstr "Gesamtsteuer diesen Monat"
+
+msgid "Date"
+msgstr "Datum"
+
+msgid "Character"
+msgstr "Charakter"
+
+msgid "System"
+msgstr "System"
+
+msgid "Ore"
+msgstr "Erz"
+
+msgid "Quantity"
+msgstr "Menge"
+
+msgid "Excluded"
+msgstr "Ausgeschlossen"
+
+msgid "No mining data for this month. Data is synced automatically every day."
+msgstr "Keine Mining-Daten für diesen Monat. Daten werden automatisch täglich synchronisiert."
+
+msgid "Mining Tax Settings"
+msgstr "Mining Steuer Einstellungen"
+
+msgid "Tax Rates"
+msgstr "Steuersätze"
+
+msgid "Moon Rentals"
+msgstr "Mond-Mietverträge"
+
+msgid "Alliance Moons"
+msgstr "Alliance Monde"
+
+msgid "Tax Rates per Ore Category"
+msgstr "Steuersätze pro Erz-Kategorie"
+
+msgid "Description"
+msgstr "Beschreibung"
+
+msgid "Save"
+msgstr "Speichern"
+
+msgid "No tax rates configured."
+msgstr "Keine Steuersätze konfiguriert."
+
+msgid "Existing Moon Rentals"
+msgstr "Bestehende Mond-Mietverträge"
+
+msgid "Corporation"
+msgstr "Corporation"
+
+msgid "Moon"
+msgstr "Mond"
+
+msgid "Structure Name (Ledger)"
+msgstr "Struktur-Name (Ledger)"
+
+msgid "Monthly Fee"
+msgstr "Monatliche Gebühr"
+
+msgid "Active"
+msgstr "Aktiv"
+
+msgid "Inactive"
+msgstr "Inaktiv"
+
+msgid "Really delete rental for"
+msgstr "Mietvertrag wirklich löschen für"
+
+msgid "No moon rentals found."
+msgstr "Keine Mond-Mietverträge gefunden."
+
+msgid "Add New Moon Rental"
+msgstr "Neuen Mond-Mietvertrag anlegen"
+
+msgid "Moon Name"
+msgstr "Mond-Name"
+
+msgid "Structure Name (Ledger Match)"
+msgstr "Struktur-Name (Ledger-Match)"
+
+msgid "Monthly Fee (ISK)"
+msgstr "Monatliche Gebühr (ISK)"
+
+msgid "Add Rental"
+msgstr "Mietvertrag anlegen"
+
+msgid "Type"
+msgstr "Typ"
+
+msgid "Tax Free"
+msgstr "Steuerfrei"
+
+msgid "Really delete moon"
+msgstr "Mond wirklich löschen"
+
+msgid "No moons configured."
+msgstr "Keine Monde konfiguriert."
+
+msgid "Add New Moon"
+msgstr "Neuen Mond anlegen"
+
+msgid "Solar System"
+msgstr "Sonnensystem"
+
+msgid "Ore Category"
+msgstr "Erz-Kategorie"
+
+msgid "Moon Type"
+msgstr "Mond-Typ"
+
+msgid "Edit Moon"
+msgstr "Mond bearbeiten"
+
+msgid "Cancel"
+msgstr "Abbrechen"
+
+msgid "Public"
+msgstr "Öffentlich"
+
+msgid "Event"
+msgstr "Event"
+
+msgid "Yes"
+msgstr "Ja"
+
+msgid "No"
+msgstr "Nein"
