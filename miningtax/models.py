@@ -14,6 +14,7 @@ class General(models.Model):
         permissions = (
             ('basic_access', 'Can view Mining Tax'),
             ('mining_officer', 'Can manage Mining Tax'),
+            ('no_access', 'Cannot access Mining Tax'),
         )
 
 

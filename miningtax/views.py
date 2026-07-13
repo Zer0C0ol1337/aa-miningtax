@@ -13,6 +13,9 @@ from .forms import TaxRateForm, MoonRentalForm, AllianceMoonForm
 
 
 def has_basic_access(user):
+    # no_access überschreibt alle anderen Permissions
+    if user.has_perm('miningtax.no_access'):
+        return False
     return (
         user.has_perm('miningtax.basic_access') or
         user.has_perm('miningtax.mining_officer') or
