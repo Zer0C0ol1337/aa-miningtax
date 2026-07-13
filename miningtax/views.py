@@ -7,6 +7,7 @@ from django.contrib import messages
 
 from .models import MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord
 from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
+from .services import sync_character_mining, update_market_prices, sync_all_corp_observers
 from .services import sync_character_mining, update_market_prices
 from .forms import TaxRateForm, MoonRentalForm, AllianceMoonForm
 
@@ -87,8 +88,10 @@ def sync_now(request):
         except Exception as e:
             messages.warning(request, f'Sync für {character.character_name} fehlgeschlagen: {e}')
 
+    from .services import sync_all_corp_observers
+    corp_synced = sync_all_corp_observers()
     priced = update_market_prices()
-    messages.success(request, f'✅ {total_synced} Einträge synchronisiert, {priced} Preise aktualisiert')
+    messages.success(request, f'✅ {total_synced} persönliche + {corp_synced} Corp Einträge synchronisiert, {priced} Preise aktualisiert')
 
     return redirect('miningtax:dashboard')
 
