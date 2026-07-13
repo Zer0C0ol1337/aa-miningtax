@@ -2,21 +2,42 @@ from django.db import models
 from allianceauth.eveonline.models import EveCharacter, EveCorporationInfo, EveAllianceInfo
 
 
+# Dummy-Model nur für App-Permissions — wird nicht in der DB angelegt (managed = False).
+# Erscheint im Alliance Auth Admin als "Miningtax | general | ..."
+# Neue Member haben KEINE Permission bis sie explizit einer Gruppe zugewiesen werden.
+class General(models.Model):
+    class Meta:
+        managed = False
+        default_permissions = ()
+        verbose_name = 'general'
+        verbose_name_plural = 'general'
+        permissions = (
+            ('basic_access', 'Can view Mining Tax'),
+            ('mining_officer', 'Can manage Mining Tax'),
+        )
+
+
 # Erz-Kategorie pro EVE type_id (z.B. type_id 45498 -> "R16")
 class OreCategory(models.Model):
     type_id = models.PositiveIntegerField(primary_key=True)
     type_name = models.CharField(max_length=255)
-    category = models.CharField(max_length=50)  # z.B. R64, R32, R16, R8, R4, Ice, Ore
+    category = models.CharField(max_length=50)
+
+    class Meta:
+        default_permissions = ()
 
     def __str__(self):
         return f"{self.type_name} ({self.category})"
 
 
-# Steuersatz pro Kategorie, im Admin-Panel editierbar
+# Steuersatz pro Kategorie, im Settings-UI editierbar
 class TaxRate(models.Model):
     ore_category = models.CharField(max_length=50, unique=True)
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
     description = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        default_permissions = ()
 
     def __str__(self):
         return f"{self.ore_category}: {self.tax_rate}%"
@@ -36,14 +57,14 @@ class MiningLedgerEntry(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        # Verhindert doppelte Einträge beim wiederholten Sync (entspricht unserem alten UNIQUE constraint)
+        default_permissions = ()
         unique_together = ('character', 'date', 'type_id', 'solar_system_id')
 
     def __str__(self):
         return f"{self.character.character_name} - {self.type_name} x{self.quantity}"
 
 
-# Alliance-Mond — entweder "public" (normal besteuert) oder "event" (steuerfrei für Mining-Officer-Events)
+# Alliance-Mond — entweder "public" (normal besteuert) oder "event" (steuerfrei)
 class AllianceMoon(models.Model):
     MOON_TYPES = [('public', 'Public'), ('event', 'Event')]
 
@@ -51,7 +72,10 @@ class AllianceMoon(models.Model):
     solar_system_name = models.CharField(max_length=255, blank=True)
     ore_category = models.CharField(max_length=50, default='R64')
     moon_type = models.CharField(max_length=20, choices=MOON_TYPES, default='public')
-    is_tax_free = models.BooleanField(default=False)  # True nur bei moon_type == 'event'
+    is_tax_free = models.BooleanField(default=False)
+
+    class Meta:
+        default_permissions = ()
 
     def __str__(self):
         return f"{self.name} ({self.get_moon_type_display()})"
@@ -61,7 +85,7 @@ class AllianceMoon(models.Model):
 class FleetSession(models.Model):
     name = models.CharField(max_length=255)
     ore_type_id = models.PositiveIntegerField(null=True, blank=True)
-    ore_category = models.CharField(max_length=50, blank=True)  # alternative zu ore_type_id: ganze Kategorie ausschließen
+    ore_category = models.CharField(max_length=50, blank=True)
     moon = models.ForeignKey(AllianceMoon, on_delete=models.SET_NULL, null=True, blank=True)
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
@@ -69,24 +93,30 @@ class FleetSession(models.Model):
     exclude_from_billing = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        default_permissions = ()
+
     def __str__(self):
         return self.name
 
 
-# Mond-Mietvertrag einer Corp — feste monatliche Gebühr, Mining auf der zugehörigen Struktur wird steuerfrei
+# Mond-Mietvertrag einer Corp — feste monatliche Gebühr, Mining wird steuerfrei
 class MoonRental(models.Model):
     corporation = models.ForeignKey(EveCorporationInfo, on_delete=models.CASCADE)
     moon_name = models.CharField(max_length=255)
-    structure_name = models.CharField(max_length=255, blank=True)  # exakter solar_system_name Match im Ledger
+    structure_name = models.CharField(max_length=255, blank=True)
     monthly_fee = models.DecimalField(max_digits=20, decimal_places=2)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        default_permissions = ()
 
     def __str__(self):
         return f"{self.corporation.corporation_name} - {self.moon_name}"
 
 
-# Gespeicherte Monats-Abrechnung pro Corp — entspricht unserer alten alliance_billing Tabelle
+# Gespeicherte Monats-Abrechnung pro Corp
 class AllianceBillingRecord(models.Model):
     corporation = models.ForeignKey(EveCorporationInfo, on_delete=models.CASCADE)
     month = models.PositiveSmallIntegerField()
@@ -101,6 +131,7 @@ class AllianceBillingRecord(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        default_permissions = ()
         unique_together = ('corporation', 'month', 'year')
 
     def __str__(self):
