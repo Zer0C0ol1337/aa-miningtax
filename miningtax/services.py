@@ -133,7 +133,7 @@ def sync_corp_observer(corp_id, token):
     Holt alle Mining-Observer (Monde/Strukturen) einer Corp und speichert
     die Ledger-Einträge in MiningLedgerEntry.
     Braucht einen Token mit esi-industry.read_corporation_mining.v1.
-    Liefert die Struktur-ID als solar_system_id — der Name wird per ESI aufgelöst.
+    Unbekannte Characters werden automatisch per ESI in der AA-DB angelegt.
     """
     from allianceauth.eveonline.models import EveCharacter
     from esi.exceptions import HTTPNotModified
@@ -170,14 +170,15 @@ def sync_corp_observer(corp_id, token):
             continue
 
         for entry in entries:
-            # Character aus Alliance Auth DB holen
+            # Character aus Alliance Auth DB holen — falls unbekannt automatisch per ESI anlegen
             try:
                 character = EveCharacter.objects.get(character_id=entry.character_id)
             except EveCharacter.DoesNotExist:
-                # Character nicht in AA registriert — trotzdem speichern mit Platzhalter
-                # Dafür müssen wir einen EveCharacter anlegen oder überspringen
-                # Wir überspringen hier — nur registrierte Member werden getrackt
-                continue
+                try:
+                    character = EveCharacter.objects.create_character(character_id=entry.character_id)
+                except Exception as e:
+                    print(f'⚠️ Character {entry.character_id} konnte nicht angelegt werden: {e}')
+                    continue
 
             type_name = _get_type_name_db_first(entry.type_id, esi)
 
@@ -205,12 +206,10 @@ def sync_all_corp_observers():
     """
     from esi.models import Token
 
-    # Alle Tokens mit Corp-Mining-Scope holen
     tokens = Token.objects.filter(
         scopes__name='esi-industry.read_corporation_mining.v1'
     ).require_valid()
 
-    # Pro Corp nur einen Token nutzen (vermeidet doppelte Syncs)
     seen_corps = set()
     total_synced = 0
 
@@ -363,7 +362,6 @@ def update_market_prices():
 def _fetch_bulk_prices():
     """Ein ESI-Call für alle EVE-Marktpreise via /markets/prices/."""
     try:
-        from esi.exceptions import HTTPNotModified
         esi = _get_esi_client()
         results = esi.client.Market.GetMarketsPrices().results()
         return {
