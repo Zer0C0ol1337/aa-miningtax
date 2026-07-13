@@ -15,6 +15,12 @@
             <a href="{% url 'miningtax:settings' %}" class="btn btn-outline-secondary">
                 ⚙️ Einstellungen
             </a>
+            <form method="post" action="{% url 'miningtax:sync_now' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-primary btn-sm">
+                    🔄 Manuell synchronisieren
+                </button>
+            </form>
             {% endif %}
         </div>
     </div>
