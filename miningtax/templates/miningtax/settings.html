@@ -1,11 +1,22 @@
 {% extends 'allianceauth/base-bs5.html' %}
 {% load i18n %}
+{% load miningtax_tags %}
 
 {% block title %}{% trans "Mining Tax Settings" %}{% endblock %}
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <h2 class="mb-4"><i class="fas fa-cog"></i> {% trans "Mining Tax Settings" %}</h2>
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="fas fa-cog"></i> {% trans "Mining Tax Settings" %}</h2>
+    <div class="d-flex gap-2">
+      <a href="{% url 'miningtax:dashboard' %}" class="btn btn-outline-secondary">
+        ⛏️ {% trans "My Ledger" %}
+      </a>
+      <a href="{% url 'miningtax:alliance_overview' %}" class="btn btn-outline-secondary">
+        🏛️ {% trans "Alliance Billing" %}
+      </a>
+    </div>
+  </div>
 
   {% for message in messages %}
     <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}success{% endif %} alert-dismissible fade show" role="alert">
@@ -28,6 +39,11 @@
     <li class="nav-item">
       <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-moons">
         <i class="fas fa-globe"></i> {% trans "Alliance Moons" %}
+      </button>
+    </li>
+    <li class="nav-item">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-treasury">
+        <i class="fas fa-wallet"></i> {% trans "Treasury" %}
       </button>
     </li>
   </ul>
@@ -94,7 +110,7 @@
                 <td class="align-middle">{{ rental.corporation.corporation_name }}</td>
                 <td class="align-middle">{{ rental.moon_name }}</td>
                 <td class="align-middle"><code>{{ rental.structure_name }}</code></td>
-                <td class="align-middle">{{ rental.monthly_fee|floatformat:0 }} ISK</td>
+                <td class="align-middle">{{ rental.monthly_fee|isk }} ISK</td>
                 <td class="align-middle">
                   {% if rental.active %}
                     <span class="badge bg-success">{% trans "Active" %}</span>
@@ -259,6 +275,96 @@
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+
+    {# TAB 4: TREASURY #}
+    <div class="tab-pane fade" id="tab-treasury">
+      <div class="alert alert-info">
+        <i class="fas fa-info-circle"></i>
+        {% trans "The configured corporation's wallet is checked for incoming payments. A payment counts as received when the wallet journal reason contains the configured keyword, the amount is sufficient, and the sending corporation matches an open billing record." %}
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Treasury Configuration" %}</strong></div>
+        <div class="card-body p-0">
+          <table class="table table-hover mb-0">
+            <thead class="table-dark">
+              <tr>
+                <th>{% trans "Corporation" %}</th>
+                <th>{% trans "Payment Reason Keyword" %}</th>
+                <th>{% trans "Wallet Division" %}</th>
+                <th>{% trans "Active" %}</th>
+                <th style="width:100px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for config in treasury_configs %}
+              <tr>
+                <td class="align-middle">{{ config.corporation.corporation_name }}</td>
+                <td class="align-middle"><code>{{ config.payment_reason_keyword }}</code></td>
+                <td class="align-middle">{{ config.wallet_division }}</td>
+                <td class="align-middle">
+                  {% if config.active %}
+                    <span class="badge bg-success">{% trans "Active" %}</span>
+                  {% else %}
+                    <span class="badge bg-secondary">{% trans "Inactive" %}</span>
+                  {% endif %}
+                </td>
+                <td class="align-middle">
+                  <form method="post" action="{% url 'miningtax:settings_delete_treasury' config.pk %}"
+                        onsubmit="return confirm('{% trans "Really delete this treasury configuration?" %}')">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-danger">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="5" class="text-center text-muted py-3">{% trans "No treasury configuration found." %}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><strong>{% trans "Add Treasury Configuration" %}</strong></div>
+        <div class="card-body">
+          <form method="post" action="{% url 'miningtax:settings_add_treasury' %}">
+            {% csrf_token %}
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label">{{ treasury_form.corporation.label }}</label>
+                {{ treasury_form.corporation }}
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">{{ treasury_form.payment_reason_keyword.label }}</label>
+                {{ treasury_form.payment_reason_keyword }}
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">{{ treasury_form.wallet_division.label }}</label>
+                {{ treasury_form.wallet_division }}
+              </div>
+              <div class="col-md-2 d-flex align-items-end">
+                <div class="form-check mb-2">
+                  {{ treasury_form.active }}
+                  <label class="form-check-label">{% trans "Active" %}</label>
+                </div>
+              </div>
+            </div>
+            <div class="mt-3">
+              <button type="submit" class="btn btn-success">
+                <i class="fas fa-plus"></i> {% trans "Add" %}
+              </button>
+            </div>
+          </form>
+          <div class="mt-3 text-muted small">
+            <i class="fas fa-lock"></i>
+            {% trans "Requires a character of the treasury corporation logged in with the esi-wallet.read_corporation_wallets.v1 scope." %}
+          </div>
         </div>
       </div>
     </div>

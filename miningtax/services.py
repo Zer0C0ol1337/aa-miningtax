@@ -1,6 +1,12 @@
-from decimal import Decimal
+import logging
 
 from .models import MiningLedgerEntry, OreCategory
+
+logger = logging.getLogger(__name__)
+
+# Struktur-IDs (Observer, z.B. Refineries) sind sehr große Zahlen (>100_000_000),
+# echte Solar-System-IDs liegen im niedrigen Millionenbereich.
+STRUCTURE_ID_THRESHOLD = 100_000_000
 
 
 # ─── CORPTOOLS INTEGRATION ────────────────────────────────────────────────────
@@ -39,8 +45,22 @@ def _get_corptools_entries(character):
     except ImportError:
         return None
     except Exception as e:
-        print(f'⚠️ Corptools-Lesefehler für {character.character_name}: {e}')
+        logger.warning(f'Corptools-Lesefehler für {character.character_name}: {e}')
         return None
+
+
+def _has_structure_entry(character, date, type_id):
+    """
+    Prüft ob für character/date/type_id bereits ein Eintrag vom Corp Observer
+    existiert (solar_system_id > STRUCTURE_ID_THRESHOLD). Wenn ja, soll der
+    persönliche Ledger-Sync diesen NICHT mit weniger genauen Daten überschreiben.
+    """
+    existing = MiningLedgerEntry.objects.filter(
+        character=character, date=date, type_id=type_id
+    ).first()
+    if existing and existing.solar_system_id and existing.solar_system_id > STRUCTURE_ID_THRESHOLD:
+        return True
+    return False
 
 
 # ─── PERSÖNLICHER CHARACTER SYNC ─────────────────────────────────────────────
@@ -60,17 +80,25 @@ def sync_character_mining(character):
 
 
 def _sync_from_corptools(character, entries):
-    """Speichert Corptools-Daten in unsere MiningLedgerEntry-Tabelle."""
+    """
+    Speichert Corptools-Daten in unsere MiningLedgerEntry-Tabelle.
+    Überschreibt keinen bereits vorhandenen, genaueren Corp-Observer-Eintrag.
+    """
     saved = 0
     for entry in entries:
+        if _has_structure_entry(character, entry['date'], entry['type_id']):
+            # Corp Observer hat schon einen genaueren Eintrag — überspringen
+            saved += 1
+            continue
+
         MiningLedgerEntry.objects.update_or_create(
             character=character,
             date=entry['date'],
             type_id=entry['type_id'],
-            solar_system_id=entry['solar_system_id'],
             defaults={
                 'type_name': entry['type_name'],
                 'quantity': entry['quantity'],
+                'solar_system_id': entry['solar_system_id'],
                 'solar_system_name': entry['solar_system_name'],
             }
         )
@@ -79,12 +107,15 @@ def _sync_from_corptools(character, entries):
 
 
 def _sync_from_esi(character):
-    """Fallback ESI-Sync wenn Corptools nicht verfügbar ist."""
+    """
+    Fallback ESI-Sync wenn Corptools nicht verfügbar ist.
+    Überschreibt keinen bereits vorhandenen, genaueren Corp-Observer-Eintrag.
+    """
     try:
         from esi.models import Token
         from esi.exceptions import HTTPNotModified
     except ImportError:
-        print('⚠️ django-esi nicht verfügbar')
+        logger.warning('django-esi nicht verfügbar')
         return 0
 
     esi = _get_esi_client()
@@ -94,7 +125,8 @@ def _sync_from_esi(character):
     ).require_scopes('esi-industry.read_character_mining.v1').require_valid().first()
 
     if not token:
-        raise Exception(f'Kein gültiges Mining-Token für {character.character_name}')
+        logger.warning(f'Kein gültiges Mining-Token für {character.character_name}')
+        return 0
 
     try:
         ledger = esi.client.Industry.GetCharactersCharacterIdMining(
@@ -102,10 +134,17 @@ def _sync_from_esi(character):
             token=token
         ).results()
     except HTTPNotModified:
-        return 0
+        existing = MiningLedgerEntry.objects.filter(character=character).count()
+        logger.debug(f'{character.character_name}: Kein neuer Ledger (304) — {existing} bestehende Einträge aktuell')
+        return existing
 
     saved = 0
     for entry in ledger:
+        if _has_structure_entry(character, entry.date, entry.type_id):
+            # Corp Observer hat schon einen genaueren Eintrag — überspringen
+            saved += 1
+            continue
+
         type_name = _get_type_name_db_first(entry.type_id, esi)
         location_id = getattr(entry, 'solar_system_id', None)
         location_name = _get_location_name_db_first(location_id, token, esi)
@@ -114,10 +153,10 @@ def _sync_from_esi(character):
             character=character,
             date=entry.date,
             type_id=entry.type_id,
-            solar_system_id=location_id,
             defaults={
                 'type_name': type_name,
                 'quantity': entry.quantity,
+                'solar_system_id': location_id,
                 'solar_system_name': location_name,
             }
         )
@@ -128,12 +167,13 @@ def _sync_from_esi(character):
 
 # ─── CORP OBSERVER SYNC ───────────────────────────────────────────────────────
 
-def sync_corp_observer(corp_id, token):
+def sync_corp_observer(corp_id, corp_name, token):
     """
     Holt alle Mining-Observer (Monde/Strukturen) einer Corp und speichert
-    die Ledger-Einträge in MiningLedgerEntry.
-    Braucht einen Token mit esi-industry.read_corporation_mining.v1.
-    Unbekannte Characters werden automatisch per ESI in der AA-DB angelegt.
+    die Ledger-Einträge in MiningLedgerEntry. Der Corp Observer hat immer
+    Vorrang — er überschreibt ggf. vorhandene, weniger genaue Einträge
+    aus dem persönlichen Ledger (unique_together ist character/date/type_id,
+    also automatisch kein Duplikat möglich).
     """
     from allianceauth.eveonline.models import EveCharacter
     from esi.exceptions import HTTPNotModified
@@ -146,16 +186,21 @@ def sync_corp_observer(corp_id, token):
             corporation_id=corp_id,
             token=token
         ).results()
+        logger.info(f'Corp {corp_name}: {len(observers)} Observer (Strukturen) gefunden')
     except HTTPNotModified:
-        return 0
+        existing = MiningLedgerEntry.objects.filter(
+            character__corporation_id=corp_id
+        ).count()
+        logger.info(f'Corp {corp_name}: Observer-Liste nicht geändert (304) — {existing} bestehende Einträge aktuell')
+        return existing
     except Exception as e:
-        print(f'⚠️ Observer-Liste für Corp {corp_id} fehlgeschlagen: {e}')
+        logger.warning(f'Corp {corp_name} ({corp_id}): Observer-Liste fehlgeschlagen: {e}')
         return 0
 
     for observer in observers:
         observer_id = observer.observer_id
-        # Struktur-Namen per ESI auflösen (einmalig pro Observer, DB-cached)
         structure_name = _get_location_name_db_first(observer_id, token, esi)
+        logger.info(f'Corp {corp_name}: Verarbeite Observer {observer_id} ({structure_name})')
 
         try:
             entries = esi.client.Industry.GetCorporationCorporationIdMiningObserversObserverId(
@@ -163,33 +208,44 @@ def sync_corp_observer(corp_id, token):
                 observer_id=observer_id,
                 token=token
             ).results()
+            logger.info(f'Corp {corp_name}: Observer {observer_id} → {len(entries)} Einträge')
         except HTTPNotModified:
+            existing = MiningLedgerEntry.objects.filter(
+                solar_system_id=observer_id
+            ).count()
+            logger.info(
+                f'Corp {corp_name}: Observer {observer_id} ({structure_name}) nicht geändert (304) '
+                f'— {existing} bestehende Einträge aktuell'
+            )
+            saved += existing
             continue
         except Exception as e:
-            print(f'⚠️ Observer {observer_id} fehlgeschlagen: {e}')
+            logger.warning(f'Corp {corp_name}: Observer {observer_id} fehlgeschlagen: {e}')
             continue
 
         for entry in entries:
-            # Character aus Alliance Auth DB holen — falls unbekannt automatisch per ESI anlegen
             try:
                 character = EveCharacter.objects.get(character_id=entry.character_id)
             except EveCharacter.DoesNotExist:
                 try:
                     character = EveCharacter.objects.create_character(character_id=entry.character_id)
+                    logger.info(f'Character {character.character_name} automatisch in AA angelegt')
                 except Exception as e:
-                    print(f'⚠️ Character {entry.character_id} konnte nicht angelegt werden: {e}')
+                    logger.warning(f'Character {entry.character_id} konnte nicht angelegt werden: {e}')
                     continue
 
             type_name = _get_type_name_db_first(entry.type_id, esi)
 
+            # unique_together ist (character, date, type_id) — Corp Observer
+            # überschreibt automatisch jeden vorhandenen (weniger genauen) Eintrag
             MiningLedgerEntry.objects.update_or_create(
                 character=character,
                 date=entry.last_updated,
                 type_id=entry.type_id,
-                solar_system_id=observer_id,
                 defaults={
                     'type_name': type_name,
                     'quantity': entry.quantity,
+                    'solar_system_id': observer_id,
                     'solar_system_name': structure_name,
                 }
             )
@@ -203,34 +259,54 @@ def sync_all_corp_observers():
     Iteriert über alle Characters mit esi-industry.read_corporation_mining.v1 Token
     und synct die Corp-Observer-Daten für ihre jeweilige Corp.
     Jede Corp wird nur einmal gesynct (auch wenn mehrere Director-Tokens vorhanden).
+    Respektiert ESI ETags — kein Cache-Clear, 304 Not Modified wird korrekt behandelt.
     """
     from esi.models import Token
+    from allianceauth.eveonline.models import EveCharacter
 
     tokens = Token.objects.filter(
         scopes__name='esi-industry.read_corporation_mining.v1'
     ).require_valid()
+
+    token_count = tokens.count()
+    logger.info(f'Corp Observer Sync gestartet — {token_count} Token(s) mit Corp-Mining-Scope gefunden')
+
+    if token_count == 0:
+        logger.warning(
+            'Kein Token mit esi-industry.read_corporation_mining.v1 gefunden. '
+            'Ein Director-Character muss sich in Alliance Auth per SSO einloggen '
+            'und den Corp-Mining-Scope authorisieren.'
+        )
+        return 0
 
     seen_corps = set()
     total_synced = 0
 
     for token in tokens:
         try:
-            from allianceauth.eveonline.models import EveCharacter
             character = EveCharacter.objects.get(character_id=token.character_id)
             corp_id = character.corporation_id
+            corp_name = character.corporation_name
 
             if corp_id in seen_corps:
+                logger.debug(f'Corp {corp_name} bereits gesynct — überspringe duplizierten Token')
                 continue
             seen_corps.add(corp_id)
 
-            print(f'🏭 Synce Corp Observer für {character.corporation_name} via {character.character_name}')
-            synced = sync_corp_observer(corp_id, token)
+            logger.info(f'Starte Corp Observer Sync für {corp_name} via {character.character_name}')
+            synced = sync_corp_observer(corp_id, corp_name, token)
             total_synced += synced
-            print(f'   → {synced} Einträge')
+            logger.info(f'Corp {corp_name}: Sync abgeschlossen — {synced} Einträge')
 
+        except EveCharacter.DoesNotExist:
+            logger.warning(
+                f'Token {token.character_id} hat keinen zugehörigen EveCharacter in AA. '
+                f'Character muss sich erst in Alliance Auth registrieren.'
+            )
         except Exception as e:
-            print(f'⚠️ Corp Observer Sync fehlgeschlagen für Token {token.character_id}: {e}')
+            logger.warning(f'Corp Observer Sync fehlgeschlagen für Token {token.character_id}: {e}')
 
+    logger.info(f'Corp Observer Sync abgeschlossen — gesamt {total_synced} Einträge')
     return total_synced
 
 
@@ -245,11 +321,13 @@ def sync_all_characters():
         character_ids = CharacterAudit.objects.values_list(
             'character__character_id', flat=True
         ).distinct()
+        logger.info(f'Corptools verfügbar — {character_ids.count()} Characters gefunden')
     except ImportError:
         from esi.models import Token
         character_ids = Token.objects.filter(
             scopes__name='esi-industry.read_character_mining.v1'
         ).values_list('character_id', flat=True).distinct()
+        logger.info(f'Corptools nicht installiert — ESI Fallback, {character_ids.count()} Tokens gefunden')
 
     total_synced = 0
     for char_id in character_ids:
@@ -257,7 +335,7 @@ def sync_all_characters():
             character = EveCharacter.objects.get(character_id=char_id)
             total_synced += sync_character_mining(character)
         except Exception as e:
-            print(f'⚠️ Sync Fehler für Character {char_id}: {e}')
+            logger.warning(f'Sync Fehler für Character {char_id}: {e}')
 
     return total_synced
 
@@ -275,7 +353,7 @@ def _get_esi_client():
             compatibility_date="2026-06-09",
             ua_appname="EVE Mining Manager Plugin",
             ua_version="1.0",
-            tags=['Industry', 'Universe', 'Market'],
+            tags=['Industry', 'Universe', 'Market', 'Wallet'],
         )
     return _esi_client
 
@@ -312,7 +390,7 @@ def _get_location_name_db_first(location_id, token, esi):
         return existing
 
     name = f'Unbekannt ({location_id})'
-    if location_id > 100_000_000:
+    if location_id > STRUCTURE_ID_THRESHOLD:
         try:
             structure = esi.client.Universe.GetUniverseStructuresStructureId(
                 structure_id=location_id, token=token
@@ -370,6 +448,5 @@ def _fetch_bulk_prices():
             if item.type_id is not None
         }
     except Exception as e:
-        # 304 Not Modified ist kein Fehler — Preise sind noch aktuell
-        print(f'ℹ️ Marktpreise nicht aktualisiert: {e}')
+        logger.info(f'Marktpreise nicht aktualisiert: {e}')
         return {}

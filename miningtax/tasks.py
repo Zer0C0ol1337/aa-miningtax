@@ -8,29 +8,33 @@ from .services import sync_all_characters, sync_all_corp_observers, update_marke
 logger = logging.getLogger(__name__)
 
 
-# Täglicher Sync: persönliche Ledger + Corp Observer + Marktpreise + Billing Records
+# Täglicher Sync: persönliche Ledger + Corp Observer + Marktpreise + Billing Records + Zahlungsprüfung
 @shared_task
 def daily_mining_sync():
     from .billing import save_billing_records_for_month
+    from .payments import check_corp_payments
 
     synced_chars = sync_all_characters()
     synced_corps = sync_all_corp_observers()
     priced = update_market_prices()
 
-    # Billing Records für den aktuellen Monat aktualisieren
     today = date.today()
     billing_saved = save_billing_records_for_month(today.year, today.month)
 
+    # Prüft ob Corps ihre Steuer bereits überwiesen haben (Wallet Journal)
+    payments_matched = check_corp_payments(today.year, today.month)
+
     logger.info(
         f'Daily sync: {synced_chars} persönliche, {synced_corps} Corp Observer, '
-        f'{priced} Preise, {billing_saved} Billing Records aktualisiert'
+        f'{priced} Preise, {billing_saved} Billing Records, {payments_matched} Zahlungen erkannt'
     )
 
     return (
         f'{synced_chars} persönliche Einträge, '
         f'{synced_corps} Corp Observer Einträge, '
         f'{priced} Preise aktualisiert, '
-        f'{billing_saved} Billing Records gespeichert'
+        f'{billing_saved} Billing Records gespeichert, '
+        f'{payments_matched} Zahlungen automatisch erkannt'
     )
 
 

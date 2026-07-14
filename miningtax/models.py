@@ -2,9 +2,6 @@ from django.db import models
 from allianceauth.eveonline.models import EveCharacter, EveCorporationInfo, EveAllianceInfo
 
 
-# Dummy-Model nur für App-Permissions — wird nicht in der DB angelegt (managed = False).
-# Erscheint im Alliance Auth Admin als "Miningtax | general | ..."
-# Neue Member haben KEINE Permission bis sie explizit einer Gruppe zugewiesen werden.
 class General(models.Model):
     class Meta:
         managed = False
@@ -17,7 +14,6 @@ class General(models.Model):
         )
 
 
-# Erz-Kategorie pro EVE type_id (z.B. type_id 45498 -> "R16")
 class OreCategory(models.Model):
     type_id = models.PositiveIntegerField(primary_key=True)
     type_name = models.CharField(max_length=255)
@@ -30,7 +26,6 @@ class OreCategory(models.Model):
         return f"{self.type_name} ({self.category})"
 
 
-# Steuersatz pro Kategorie, im Settings-UI editierbar
 class TaxRate(models.Model):
     ore_category = models.CharField(max_length=50, unique=True)
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
@@ -43,7 +38,6 @@ class TaxRate(models.Model):
         return f"{self.ore_category}: {self.tax_rate}%"
 
 
-# Ein einzelner Mining-Ledger-Eintrag, direkt mit dem EveCharacter aus Alliance Auth verknüpft
 class MiningLedgerEntry(models.Model):
     character = models.ForeignKey(EveCharacter, on_delete=models.CASCADE, related_name='mining_entries')
     date = models.DateField()
@@ -58,13 +52,12 @@ class MiningLedgerEntry(models.Model):
 
     class Meta:
         default_permissions = ()
-        unique_together = ('character', 'date', 'type_id', 'solar_system_id')
+        unique_together = ('character', 'date', 'type_id')
 
     def __str__(self):
         return f"{self.character.character_name} - {self.type_name} x{self.quantity}"
 
 
-# Alliance-Mond — entweder "public" (normal besteuert) oder "event" (steuerfrei)
 class AllianceMoon(models.Model):
     MOON_TYPES = [('public', 'Public'), ('event', 'Event')]
 
@@ -81,7 +74,6 @@ class AllianceMoon(models.Model):
         return f"{self.name} ({self.get_moon_type_display()})"
 
 
-# Fleet-Session: schließt ein Erz/Kategorie in einem Zeitraum von der Abrechnung aus
 class FleetSession(models.Model):
     name = models.CharField(max_length=255)
     ore_type_id = models.PositiveIntegerField(null=True, blank=True)
@@ -100,7 +92,6 @@ class FleetSession(models.Model):
         return self.name
 
 
-# Mond-Mietvertrag einer Corp — feste monatliche Gebühr, Mining wird steuerfrei
 class MoonRental(models.Model):
     corporation = models.ForeignKey(EveCorporationInfo, on_delete=models.CASCADE)
     moon_name = models.CharField(max_length=255)
@@ -116,7 +107,6 @@ class MoonRental(models.Model):
         return f"{self.corporation.corporation_name} - {self.moon_name}"
 
 
-# Gespeicherte Monats-Abrechnung pro Corp
 class AllianceBillingRecord(models.Model):
     corporation = models.ForeignKey(EveCorporationInfo, on_delete=models.CASCADE)
     month = models.PositiveSmallIntegerField()
@@ -128,6 +118,9 @@ class AllianceBillingRecord(models.Model):
     category_snapshot = models.JSONField(null=True, blank=True)
     paid = models.BooleanField(default=False)
     paid_at = models.DateTimeField(null=True, blank=True)
+    # True wenn der Zahlungseingang automatisch über die Wallet-Journal-Prüfung
+    # erkannt wurde statt manuell per Button bestätigt
+    auto_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -136,3 +129,27 @@ class AllianceBillingRecord(models.Model):
 
     def __str__(self):
         return f"{self.corporation.corporation_name} {self.month}/{self.year}"
+
+
+# Konfiguration der Treasury-Corp deren Wallet auf Steuerzahlungen geprüft wird.
+# Es sollte immer nur einen aktiven Eintrag geben.
+class TreasuryConfig(models.Model):
+    corporation = models.ForeignKey(
+        EveCorporationInfo, on_delete=models.CASCADE,
+        help_text='Corp deren Wallet auf eingehende Steuerzahlungen geprüft wird'
+    )
+    payment_reason_keyword = models.CharField(
+        max_length=255, default='Corp Steuer',
+        help_text='Text der im Wallet-Journal-Grund enthalten sein muss (z.B. "Corp Steuer")'
+    )
+    wallet_division = models.PositiveSmallIntegerField(
+        default=1,
+        help_text='Wallet-Division die geprüft wird (1-7, Standard: 1 = Master Wallet)'
+    )
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        default_permissions = ()
+
+    def __str__(self):
+        return f"Treasury: {self.corporation.corporation_name}"

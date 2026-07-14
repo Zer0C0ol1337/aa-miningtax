@@ -1,12 +1,12 @@
 {% extends "allianceauth/base-bs5.html" %}
 {% load i18n %}
+{% load miningtax_tags %}
 
 {% block page_title %}{% trans "Alliance Mining Tax" %}{% endblock %}
 
 {% block content %}
 <div class="container">
 
-    {# ── HEADER ────────────────────────────────────────────────────────────── #}
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h1>🏛️ {% trans "Alliance Billing" %} — {{ month }}/{{ year }}</h1>
         <div class="d-flex gap-2">
@@ -16,6 +16,10 @@
             <a href="{% url 'miningtax:settings' %}" class="btn btn-outline-secondary">
                 ⚙️ {% trans "Settings" %}
             </a>
+            <a href="{% url 'miningtax:check_payments_now' %}?year={{ year }}&month={{ month }}"
+               class="btn btn-outline-primary">
+                💰 {% trans "Check Payments Now" %}
+            </a>
             <a href="{% url 'miningtax:download_all_corps_zip' %}?year={{ year }}&month={{ month }}"
                class="btn btn-success">
                 📦 {% trans "Download All as ZIP" %}
@@ -23,7 +27,6 @@
         </div>
     </div>
 
-    {# Django-Messages #}
     {% for message in messages %}
     <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}success{% endif %} alert-dismissible fade show" role="alert">
         {{ message }}
@@ -31,7 +34,6 @@
     </div>
     {% endfor %}
 
-    {# ── MONATS-NAVIGATION (Werte kommen aus der View) ─────────────────────── #}
     <div class="d-flex gap-2 align-items-center mb-4">
         <a href="?year={{ prev_year }}&month={{ prev_month }}" class="btn btn-sm btn-outline-primary">
             ◀ {% trans "Previous Month" %}
@@ -42,13 +44,12 @@
         </a>
     </div>
 
-    {# ── SUMMARY-KARTEN ────────────────────────────────────────────────────── #}
     <div class="row mb-4">
         <div class="col-md-6">
             <div class="card">
                 <div class="card-body">
                     <div class="text-muted">{% trans "Total Alliance Mining" %}</div>
-                    <div class="fs-4">{{ totals.mined|floatformat:2 }} ISK</div>
+                    <div class="fs-4">{{ totals.mined|isk }} ISK</div>
                 </div>
             </div>
         </div>
@@ -56,13 +57,12 @@
             <div class="card">
                 <div class="card-body">
                     <div class="text-muted">{% trans "Total Mining Tax" %}</div>
-                    <div class="fs-4 text-danger">{{ totals.tax|floatformat:2 }} ISK</div>
+                    <div class="fs-4 text-danger">{{ totals.tax|isk }} ISK</div>
                 </div>
             </div>
         </div>
     </div>
 
-    {# ── CORP-KARTEN ───────────────────────────────────────────────────────── #}
     {% for corp_id, corp in corps.items %}
     <div class="card mb-3 {% if corp.paid %}border-success{% endif %}">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -73,14 +73,19 @@
                 <strong>{{ corp.corp_name }}</strong>
                 {% if corp.paid %}
                     <span class="badge bg-success">
-                        ✅ {% trans "Paid" %} {% if corp.paid_at %}— {{ corp.paid_at|date:"d.m.Y" }}{% endif %}
+                        ✅ {% if corp.auto_verified %}{% trans "Auto-Verified" %}{% else %}{% trans "Paid" %}{% endif %}
+                        {% if corp.paid_at %}— {{ corp.paid_at|date:"d.m.Y" }}{% endif %}
                     </span>
                 {% else %}
                     <span class="badge bg-warning text-dark">⏳ {% trans "Pending" %}</span>
                 {% endif %}
                 <span class="text-muted small">
-                    {% trans "Mined" %}: {{ corp.total_mined|floatformat:2 }} ISK |
-                    <span class="text-danger">{% trans "Tax" %}: {{ corp.total_tax|floatformat:2 }} ISK</span>
+                    {% trans "Mined" %}: {{ corp.total_mined|isk }} ISK |
+                    <span class="text-danger">{% trans "Tax" %}: {{ corp.total_tax|isk }} ISK</span>
+                    {% if corp.moon_rental_total %}
+                    | <span class="text-info">{% trans "Rental" %}: {{ corp.moon_rental_total|isk }} ISK</span>
+                    {% endif %}
+                    | <strong>{% trans "Due" %}: {{ corp.total_due|isk }} ISK</strong>
                 </span>
             </div>
 
@@ -96,7 +101,17 @@
                     <input type="hidden" name="month" value="{{ month }}">
                     <button type="submit" class="btn btn-sm btn-success"
                             onclick="return confirm('{{ corp.corp_name }} {% trans "Mark as paid for" %} {{ month }}/{{ year }}?')">
-                        ✅ {% trans "Mark as Paid" %}
+                        ✅ {% trans "Mark as Paid Manually" %}
+                    </button>
+                </form>
+                {% else %}
+                <form method="post" action="{% url 'miningtax:mark_unpaid' corp_id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="year" value="{{ year }}">
+                    <input type="hidden" name="month" value="{{ month }}">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary"
+                            onclick="return confirm('{{ corp.corp_name }} {% trans "Reset to unpaid for" %} {{ month }}/{{ year }}?')">
+                        ↩️ {% trans "Reset to Unpaid" %}
                     </button>
                 </form>
                 {% endif %}
@@ -106,6 +121,25 @@
         <div class="collapse" id="corp-{{ corp_id }}">
             <div class="card-body">
 
+                <h6>{% trans "Billing Summary" %}</h6>
+                <table class="table table-sm">
+                    <tbody>
+                        <tr>
+                            <td>{% trans "Mining Tax" %}</td>
+                            <td class="text-end">{{ corp.total_tax|isk }} ISK</td>
+                        </tr>
+                        <tr>
+                            <td>{% trans "Moon Rental" %}</td>
+                            <td class="text-end">{{ corp.moon_rental_total|isk }} ISK</td>
+                        </tr>
+                        <tr class="table-dark">
+                            <td><strong>{% trans "Total Due" %}</strong></td>
+                            <td class="text-end"><strong>{{ corp.total_due|isk }} ISK</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                {% if corp.categories %}
                 <h6>{% trans "By Category" %}</h6>
                 <table class="table table-sm">
                     <thead>
@@ -121,13 +155,15 @@
                         <tr>
                             <td>{{ cat }}</td>
                             <td>{{ data.rate }}%</td>
-                            <td>{{ data.value|floatformat:2 }} ISK</td>
-                            <td>{{ data.tax|floatformat:2 }} ISK</td>
+                            <td>{{ data.value|isk }} ISK</td>
+                            <td>{{ data.tax|isk }} ISK</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
+                {% endif %}
 
+                {% if corp.members %}
                 <h6>{% trans "Members" %}</h6>
                 <table class="table table-sm">
                     <thead>
@@ -141,12 +177,13 @@
                         {% for name, data in corp.members.items %}
                         <tr>
                             <td>{{ name }}</td>
-                            <td>{{ data.mined|floatformat:2 }} ISK</td>
-                            <td>{{ data.tax|floatformat:2 }} ISK</td>
+                            <td>{{ data.mined|isk }} ISK</td>
+                            <td>{{ data.tax|isk }} ISK</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
+                {% endif %}
 
             </div>
         </div>
