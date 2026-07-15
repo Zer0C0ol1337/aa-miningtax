@@ -92,8 +92,15 @@ class FleetSession(models.Model):
         return self.name
 
 
+# related_name is set explicitly because Alliance Auth's built-in "moons" app
+# also defines a MoonRental model with a corporation FK — without a distinct
+# related_name both models generate the same reverse accessor
+# (EveCorporationInfo.moonrental_set), causing a fields.E304 system check error.
 class MoonRental(models.Model):
-    corporation = models.ForeignKey(EveCorporationInfo, on_delete=models.CASCADE)
+    corporation = models.ForeignKey(
+        EveCorporationInfo, on_delete=models.CASCADE,
+        related_name='miningtax_moon_rentals'
+    )
     moon_name = models.CharField(max_length=255)
     structure_name = models.CharField(max_length=255, blank=True)
     monthly_fee = models.DecimalField(max_digits=20, decimal_places=2)
@@ -118,8 +125,6 @@ class AllianceBillingRecord(models.Model):
     category_snapshot = models.JSONField(null=True, blank=True)
     paid = models.BooleanField(default=False)
     paid_at = models.DateTimeField(null=True, blank=True)
-    # True wenn der Zahlungseingang automatisch über die Wallet-Journal-Prüfung
-    # erkannt wurde statt manuell per Button bestätigt
     auto_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -131,20 +136,19 @@ class AllianceBillingRecord(models.Model):
         return f"{self.corporation.corporation_name} {self.month}/{self.year}"
 
 
-# Konfiguration der Treasury-Corp deren Wallet auf Steuerzahlungen geprüft wird.
-# Es sollte immer nur einen aktiven Eintrag geben.
 class TreasuryConfig(models.Model):
     corporation = models.ForeignKey(
         EveCorporationInfo, on_delete=models.CASCADE,
-        help_text='Corp deren Wallet auf eingehende Steuerzahlungen geprüft wird'
+        related_name='miningtax_treasury_configs',
+        help_text='Corporation whose wallet is checked for incoming tax payments'
     )
     payment_reason_keyword = models.CharField(
-        max_length=255, default='Corp Steuer',
-        help_text='Text der im Wallet-Journal-Grund enthalten sein muss (z.B. "Corp Steuer")'
+        max_length=255, default='Corp Tax',
+        help_text='Text that must be present in the wallet journal reason (e.g. "Corp Tax")'
     )
     wallet_division = models.PositiveSmallIntegerField(
         default=1,
-        help_text='Wallet-Division die geprüft wird (1-7, Standard: 1 = Master Wallet)'
+        help_text='Wallet division to check (1-7, default: 1 = master wallet)'
     )
     active = models.BooleanField(default=True)
 
