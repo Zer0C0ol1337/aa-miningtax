@@ -11,7 +11,6 @@ from decimal import Decimal
 
 from .models import MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord, TreasuryConfig
 from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
-from .services import sync_character_mining, update_market_prices, sync_all_corp_observers
 from .forms import TaxRateForm, MoonRentalForm, AllianceMoonForm, TreasuryConfigForm
 
 logger = logging.getLogger(__name__)
@@ -20,16 +19,53 @@ logger = logging.getLogger(__name__)
 def has_basic_access(user):
     if user.is_superuser:
         return True
-    return (
-        user.has_perm('miningtax.basic_access') or
-        user.has_perm('miningtax.mining_officer')
-    )
+    if user.has_perm('miningtax.basic_access'):
+        return True
+    # Anyone with officer access (including auto-detected CEOs) also has basic access
+    return has_officer_access(user)
 
 
 def has_officer_access(user):
     if user.is_superuser:
         return True
-    return user.has_perm('miningtax.mining_officer')
+    if user.has_perm('miningtax.mining_officer'):
+        return True
+    return get_ceo_corp_id(user) is not None
+
+
+def get_ceo_corp_id(user):
+    """
+    Returns the corporation_id if the user is the CEO of a corp (via any of
+    their registered characters), otherwise None. Requires
+    EveCorporationInfo.ceo_id to be populated (set by Alliance Auth's
+    periodic corp update task).
+    """
+    from allianceauth.eveonline.models import EveCorporationInfo
+    for co in user.character_ownerships.select_related('character').all():
+        char = co.character
+        corp = EveCorporationInfo.objects.filter(corporation_id=char.corporation_id).first()
+        if corp and corp.ceo_id and corp.ceo_id == char.character_id:
+            return corp.corporation_id
+    return None
+
+
+def is_ceo_only(user):
+    """
+    True if the user only has officer access because they're a CEO
+    (auto-detected), not because of the mining_officer permission or
+    superuser status. Used to restrict the alliance overview to their
+    own corp instead of showing every corp in the alliance.
+    """
+    if user.is_superuser or user.has_perm('miningtax.mining_officer'):
+        return False
+    return get_ceo_corp_id(user) is not None
+
+
+def has_full_officer_access(user):
+    """Real officer access — permission or superuser only, not the CEO
+    auto-bypass. Used for Settings and alliance-wide actions that
+    shouldn't be limited to a single corp."""
+    return user.is_superuser or user.has_perm('miningtax.mining_officer')
 
 
 def check_access(test_func):
@@ -97,31 +133,26 @@ def dashboard(request):
         'total_tax': total_tax,
         'month': today.strftime('%B %Y'),
         'is_officer': has_officer_access(request.user),
+        'is_full_officer': has_full_officer_access(request.user),
     }
     return render(request, 'miningtax/dashboard.html', context)
 
 
+# Sync now — dispatches a background Celery task instead of running
+# synchronously in the request, avoiding timeouts on large datasets
+# (many characters, many corp observers, ESI 304-handling, etc.)
 @check_access(has_basic_access)
 def sync_now(request):
-    logger.info(f'Manual sync triggered by {request.user.username}')
-    user_characters = [co.character for co in request.user.character_ownerships.all()]
+    from .tasks import manual_sync_task
 
-    total_synced = 0
-    for character in user_characters:
-        try:
-            total_synced += sync_character_mining(character)
-        except Exception as e:
-            logger.warning(f'Sync failed for {character.character_name}: {e}\n{traceback.format_exc()}')
-            messages.warning(request, f'Sync failed for {character.character_name}: {e}')
+    logger.info(f'Manual sync queued by {request.user.username}')
+    manual_sync_task.delay(request.user.id)
 
-    corp_synced = sync_all_corp_observers()
-    priced = update_market_prices()
-    logger.info(f'Manual sync completed: {total_synced} personal + {corp_synced} corp entries, {priced} prices updated')
     messages.success(
         request,
-        f'✅ {total_synced} personal + {corp_synced} corp entries synced, {priced} prices updated'
+        '✅ Sync started in the background. This may take a few minutes for large corps — '
+        'check the log or refresh this page shortly.'
     )
-
     return redirect('miningtax:dashboard')
 
 
@@ -140,7 +171,6 @@ def alliance_overview(request):
         ).select_related('corporation')
     }
 
-    # Active moon rental total per corp — shown as its own line item on each corp card
     rental_totals = {}
     for rental in MoonRental.objects.filter(active=True).select_related('corporation'):
         corp_id = rental.corporation.corporation_id
@@ -150,10 +180,6 @@ def alliance_overview(request):
     for corp_id, corp_data in data['corps'].items():
         record = paid_records.get(corp_id)
         rental_fee = rental_totals.get(corp_id, Decimal('0'))
-        # Live total: tax + rental, always freshly calculated.
-        # Once a record is marked paid, its stored total_due reflects what was
-        # actually due at payment time and is used instead so paid invoices
-        # don't change retroactively if rentals are edited afterwards.
         live_total_due = corp_data['total_tax'] + rental_fee
         total_due = record.total_due if (record and record.paid) else live_total_due
 
@@ -166,8 +192,6 @@ def alliance_overview(request):
             'total_due': total_due,
         }
 
-    # Also include corps that have an active moon rental but no mining activity this month —
-    # they still owe the rental fee and should appear on the overview
     for corp_id, rental_fee in rental_totals.items():
         if corp_id not in corps_with_status:
             from allianceauth.eveonline.models import EveCorporationInfo
@@ -190,6 +214,23 @@ def alliance_overview(request):
                 'total_due': total_due,
             }
 
+    # CEOs (without the mining_officer permission) only see their own corp,
+    # not the full alliance overview
+    restricted_to_corp = None
+    if is_ceo_only(request.user):
+        restricted_to_corp = get_ceo_corp_id(request.user)
+        corps_with_status = {
+            cid: cdata for cid, cdata in corps_with_status.items()
+            if cid == restricted_to_corp
+        }
+
+    # Show the payment reason keyword so officers/CEOs know what to put in
+    # the wallet transfer description
+    payment_keyword = None
+    active_treasury = TreasuryConfig.objects.filter(active=True).first()
+    if active_treasury:
+        payment_keyword = active_treasury.payment_reason_keyword
+
     prev_year, prev_month = _prev_month(year, month)
     next_year, next_month = _next_month(year, month)
 
@@ -202,6 +243,9 @@ def alliance_overview(request):
         'prev_month': prev_month,
         'next_year': next_year,
         'next_month': next_month,
+        'restricted_to_corp': restricted_to_corp,
+        'payment_keyword': payment_keyword,
+        'is_full_officer': has_full_officer_access(request.user),
     }
     return render(request, 'miningtax/alliance_overview.html', context)
 
@@ -209,6 +253,11 @@ def alliance_overview(request):
 @check_access(has_officer_access)
 def mark_paid(request, corp_id):
     if request.method != 'POST':
+        return redirect('miningtax:alliance_overview')
+
+    if is_ceo_only(request.user) and get_ceo_corp_id(request.user) != corp_id:
+        logger.warning(f'{request.user.username}: attempted mark_paid on corp {corp_id} outside their own corp — denied')
+        messages.error(request, '❌ You can only manage billing for your own corporation.')
         return redirect('miningtax:alliance_overview')
 
     year = int(request.POST.get('year', date.today().year))
@@ -245,6 +294,11 @@ def mark_unpaid(request, corp_id):
     if request.method != 'POST':
         return redirect('miningtax:alliance_overview')
 
+    if is_ceo_only(request.user) and get_ceo_corp_id(request.user) != corp_id:
+        logger.warning(f'{request.user.username}: attempted mark_unpaid on corp {corp_id} outside their own corp — denied')
+        messages.error(request, '❌ You can only manage billing for your own corporation.')
+        return redirect('miningtax:alliance_overview')
+
     year = int(request.POST.get('year', date.today().year))
     month = int(request.POST.get('month', date.today().month))
 
@@ -270,27 +324,30 @@ def mark_unpaid(request, corp_id):
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
 
-@check_access(has_officer_access)
+# Check payments now — dispatches a background Celery task instead of
+# running synchronously in the request, avoiding timeouts while fetching
+# and matching wallet journal entries.
+@check_access(has_full_officer_access)
 def check_payments_now(request):
-    from .payments import check_corp_payments
+    from .tasks import check_payments_task
 
     year = int(request.GET.get('year', date.today().year))
     month = int(request.GET.get('month', date.today().month))
 
-    logger.info(f'{request.user.username}: manual payment check triggered for {month:02d}/{year}')
-    matched = check_corp_payments(year, month)
+    logger.info(f'{request.user.username}: payment check queued for {month:02d}/{year}')
+    check_payments_task.delay(year, month, requested_by=request.user.username)
 
-    if matched > 0:
-        messages.success(request, f'✅ {matched} payment(s) automatically detected and marked as paid.')
-    else:
-        messages.info(request, 'ℹ️ No new payments found. See log for details.')
-
+    messages.success(
+        request,
+        '✅ Payment check started in the background — check the log or refresh '
+        'this page shortly for results.'
+    )
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
 
 # ─── SETTINGS-VIEWS ───────────────────────────────────────────────────────────
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_view(request):
     tax_rates = TaxRate.objects.all().order_by('ore_category')
     moon_rentals = MoonRental.objects.select_related('corporation').order_by('corporation__corporation_name')
@@ -311,7 +368,7 @@ def settings_view(request):
     return render(request, 'miningtax/settings.html', context)
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_save_taxrate(request, pk):
     tax_rate = get_object_or_404(TaxRate, pk=pk)
     if request.method == 'POST':
@@ -326,7 +383,7 @@ def settings_save_taxrate(request, pk):
     return redirect('miningtax:settings')
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_add_rental(request):
     if request.method == 'POST':
         form = MoonRentalForm(request.POST)
@@ -340,7 +397,7 @@ def settings_add_rental(request):
     return redirect('miningtax:settings')
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_delete_rental(request, pk):
     rental = get_object_or_404(MoonRental, pk=pk)
     if request.method == 'POST':
@@ -351,7 +408,7 @@ def settings_delete_rental(request, pk):
     return redirect('miningtax:settings')
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_add_moon(request):
     if request.method == 'POST':
         form = AllianceMoonForm(request.POST)
@@ -365,7 +422,7 @@ def settings_add_moon(request):
     return redirect('miningtax:settings')
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_edit_moon(request, pk):
     moon = get_object_or_404(AllianceMoon, pk=pk)
     if request.method == 'POST':
@@ -380,7 +437,7 @@ def settings_edit_moon(request, pk):
     return redirect('miningtax:settings')
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_delete_moon(request, pk):
     moon = get_object_or_404(AllianceMoon, pk=pk)
     if request.method == 'POST':
@@ -391,7 +448,7 @@ def settings_delete_moon(request, pk):
     return redirect('miningtax:settings')
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_add_treasury(request):
     if request.method == 'POST':
         form = TreasuryConfigForm(request.POST)
@@ -405,7 +462,7 @@ def settings_add_treasury(request):
     return redirect('miningtax:settings')
 
 
-@check_access(has_officer_access)
+@check_access(has_full_officer_access)
 def settings_delete_treasury(request, pk):
     config = get_object_or_404(TreasuryConfig, pk=pk)
     if request.method == 'POST':

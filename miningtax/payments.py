@@ -22,7 +22,6 @@ def _get_treasury_token_for_config(config):
         try:
             character = EveCharacter.objects.get(character_id=token.character_id)
             if character.corporation_id == config.corporation.corporation_id:
-                logger.info(f'Treasury {config.corporation.corporation_name}: token found ({character.character_name})')
                 return token
         except EveCharacter.DoesNotExist:
             continue
@@ -39,6 +38,10 @@ def _check_payments_for_treasury(config, year, month, open_records):
     """
     Checks the wallet journal of ONE treasury corp against the given open
     billing records. Returns the number of matches.
+
+    Per-record and per-journal-entry detail is logged at DEBUG to avoid
+    flooding the log when there are many open records or a large journal —
+    only matches (successes) and errors are logged at INFO/WARNING.
     """
     from .services import _get_esi_client
 
@@ -54,7 +57,7 @@ def _check_payments_for_treasury(config, year, month, open_records):
             division=config.wallet_division,
             token=token
         ).results()
-        logger.info(f'Treasury {config.corporation.corporation_name} (division {config.wallet_division}): {len(journal)} journal entries retrieved')
+        logger.debug(f'Treasury {config.corporation.corporation_name} (division {config.wallet_division}): {len(journal)} journal entries retrieved')
     except Exception as e:
         logger.warning(f'Treasury {config.corporation.corporation_name}: wallet journal request failed: {e}')
         return 0
@@ -65,10 +68,6 @@ def _check_payments_for_treasury(config, year, month, open_records):
     for record in open_records:
         paying_corp_id = record.corporation.corporation_id
         paying_corp_name = record.corporation.corporation_name
-        logger.info(
-            f'Treasury {config.corporation.corporation_name}: checking incoming payment for '
-            f'{paying_corp_name} (ID: {paying_corp_id}), due: {record.total_due} ISK'
-        )
 
         found = False
         for entry in journal:
@@ -78,17 +77,9 @@ def _check_payments_for_treasury(config, year, month, open_records):
 
             if keyword not in reason.lower():
                 continue
-
-            logger.debug(
-                f'  Journal entry with keyword match: from corp {first_party_id}, '
-                f'amount {amount} ISK, reason: "{reason}"'
-            )
-
             if first_party_id != paying_corp_id:
-                logger.debug(f'  → sender corp {first_party_id} does not match {paying_corp_name} ({paying_corp_id}) — skipped')
                 continue
             if amount < float(record.total_due):
-                logger.debug(f'  → amount {amount} ISK is not enough (required: {record.total_due} ISK) — skipped')
                 continue
 
             from django.utils import timezone
@@ -98,7 +89,7 @@ def _check_payments_for_treasury(config, year, month, open_records):
             record.save(update_fields=['paid', 'paid_at', 'auto_verified'])
 
             logger.info(
-                f'✅ PAYMENT DETECTED (via {config.corporation.corporation_name}): {paying_corp_name} — '
+                f'✅ Payment detected (via {config.corporation.corporation_name}): {paying_corp_name} — '
                 f'{amount} ISK received (due: {record.total_due} ISK) — automatically marked as paid'
             )
             matched += 1
@@ -106,10 +97,7 @@ def _check_payments_for_treasury(config, year, month, open_records):
             break
 
         if not found:
-            logger.info(
-                f'❌ No matching payment found for {paying_corp_name} in treasury '
-                f'{config.corporation.corporation_name}'
-            )
+            logger.debug(f'No matching payment found for {paying_corp_name} in treasury {config.corporation.corporation_name}')
 
     return matched
 
@@ -122,11 +110,8 @@ def check_corp_payments(year, month):
     A billing record already matched in one treasury is not checked again
     in another.
     """
-    logger.info(f'=== Payment check started for {month:02d}/{year} ===')
-
     configs = TreasuryConfig.objects.filter(active=True).select_related('corporation')
     config_count = configs.count()
-    logger.info(f'Active treasury configurations: {config_count}')
 
     if config_count == 0:
         logger.warning(
@@ -141,13 +126,9 @@ def check_corp_payments(year, month):
         ).select_related('corporation')
     )
     open_count = len(open_records)
-    logger.info(f'Open (unpaid, total_due > 0) billing records for {month:02d}/{year}: {open_count}')
 
     if open_count == 0:
-        logger.info(
-            'No open billing records found. Records are only created by the '
-            'daily sync or "Mark as Paid".'
-        )
+        logger.info(f'Payment check for {month:02d}/{year}: no open billing records to check')
         return 0
 
     total_matched = 0
@@ -155,11 +136,10 @@ def check_corp_payments(year, month):
     for config in configs:
         still_open = [r for r in open_records if not r.paid]
         if not still_open:
-            logger.info('All open records already matched — skipping remaining treasuries')
             break
 
         matched = _check_payments_for_treasury(config, year, month, still_open)
         total_matched += matched
 
-    logger.info(f'=== Payment check complete: {total_matched}/{open_count} corp(s) automatically marked as paid ===')
+    logger.info(f'Payment check for {month:02d}/{year} complete: {total_matched}/{open_count} corp(s) marked as paid')
     return total_matched

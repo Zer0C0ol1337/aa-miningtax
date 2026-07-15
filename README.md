@@ -5,15 +5,17 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 ## Features
 
 - **Personal mining dashboard** — this month's ledger entries with calculated tax
-- **Alliance-wide billing overview** — all corps, all members, tax by ore category, moon rental fees, and total due
+- **Alliance-wide billing overview** — all corps, all members (grouped by main character), tax by ore category, moon rental fees, and total due
 - **Configurable tax rates** per ore category (R4 / R8 / R16 / R32 / R64 / Ice / Ore)
 - **Moon rentals** — corps renting a moon pay a flat monthly fee; mining there is tax-free for them
 - **Tax-free event moons** — alliance moons can be marked tax-free
 - **PDF invoices** — per-corp invoice or all corps as a ZIP
 - **Corp Observer sync** — a director/CEO token pulls mining data for all moons/structures of a corp, covering members who never log in to Alliance Auth themselves
 - **Corptools integration** — reads mining data directly from Corptools' DB when available (zero extra ESI calls), falls back to its own ESI sync otherwise
-- **Automatic payment verification** — checks a configured treasury corp's wallet journal for incoming tax payments (reason keyword + amount + sender corp) and marks invoices as paid automatically
+- **Automatic payment verification** — checks a configured treasury corp's wallet journal for incoming tax payments (reason keyword + amount + sender corp) and marks invoices as paid automatically; the required payment reason is shown with a one-click copy button
 - **Manual override** — mark/unmark an invoice as paid at any time
+- **CEO auto-access** — a corp's CEO automatically sees their own corp's billing (read-only view, restricted to their corp) without needing a permission assigned; full Settings and alliance-wide actions still require the `mining_officer` permission
+- **Background sync** — manual sync and payment checks run as Celery tasks, avoiding request timeouts on large datasets
 - **Permissions** — `basic_access` (dashboard), `mining_officer` (billing + settings); superusers always have full access
 - **i18n** — English by default; German fully translated; 6 more languages scaffolded
 - **Extensive logging** — every sync, payment check, and admin action is logged with context, no shell debugging required
@@ -77,7 +79,11 @@ LOGGING['loggers']['miningtax'] = {
 
 Every sync, payment match/miss, and admin action (mark paid/unpaid, settings changes) is logged to `log/miningtax.log` with the acting username — check this file first when something doesn't look right.
 
-### 5. Restart
+### 5. Celery worker required
+
+"Sync Now" and "Check Payments Now" run as background Celery tasks, so a Celery worker must be running for them to complete (they queue instantly but need the worker to process). This is normally already running as part of a standard Alliance Auth deployment.
+
+### 6. Restart
 
 ```bash
 sudo supervisorctl restart myauth:
@@ -93,19 +99,22 @@ Assign in the Alliance Auth Admin under **Authentication → Users** or via grou
 | Permission | Codename | Access |
 |---|---|---|
 | Basic access | `miningtax.basic_access` | Personal mining dashboard |
-| Mining Officer | `miningtax.mining_officer` | Alliance billing + settings + payment checks |
+| Mining Officer | `miningtax.mining_officer` | Alliance-wide billing + settings + payment checks |
 
 Superusers (`is_staff`/`is_superuser`) always have full access regardless of assigned permissions.
+
+**CEO auto-access:** a corp's CEO (per `EveCorporationInfo.ceo_id`) automatically gets read access to their own corp's billing and can mark their own corp paid/unpaid, without needing `mining_officer` assigned. They do **not** get access to Settings or alliance-wide actions (Check Payments Now, editing tax rates/moons/treasury) — those still require the real permission.
 
 **Recommended assignment:**
 - All alliance members: `basic_access`
 - Alliance Leader, Co-Leader, Mining Officer roles: `mining_officer`
+- Corp CEOs: no assignment needed, access is automatic and scoped to their own corp
 
 ---
 
 ## Settings UI
 
-Reachable at `/miningtax/settings/` (officer access only). Four tabs:
+Reachable at `/miningtax/settings/` (requires the real `mining_officer` permission or superuser — CEO auto-access does not reach this page). Four tabs:
 
 ### Tax Rates
 Per-category tax rate. `0.00%` is a valid, deliberate value (e.g. tax-free event ores) and is respected as-is.
@@ -117,7 +126,7 @@ A corp renting a moon pays a flat monthly fee; mining there becomes tax-free for
 Moons can be marked `Event` (tax-free) or `Public` (normally taxed). Matching is done via a case-insensitive substring check against the ledger's `solar_system_name`.
 
 ### Treasury
-Configure which corporation's wallet is monitored for incoming tax payments, and the keyword that must appear in the wallet journal's reason field (e.g. "Corp Tax"). A payment is matched when:
+Configure which corporation's wallet is monitored for incoming tax payments, and the keyword that must appear in the wallet journal's reason field (e.g. "Corp Tax"). This keyword is also displayed with a copy button on the alliance overview page so members know what to put in the transfer description. A payment is matched when:
 1. The wallet journal reason contains the configured keyword
 2. The sending corporation matches an open billing record's corporation
 3. The amount is at least the invoice's total due
@@ -136,9 +145,15 @@ Corp observer data always takes precedence over personal ledger data for the sam
 
 ## Automatic Payment Verification
 
-When a `TreasuryConfig` is active, the daily sync (and the manual "Check Payments Now" button) reads the configured corp's wallet journal and automatically marks matching invoices as paid (`auto_verified=True`). Invoices with nothing due (`total_due <= 0`) are skipped entirely, so a stray matching transaction can't trivially mark a zero-tax invoice as paid.
+When a `TreasuryConfig` is active, the daily sync (and the manual "Check Payments Now" button, run as a Celery task) reads the configured corp's wallet journal and automatically marks matching invoices as paid (`auto_verified=True`). Invoices with nothing due (`total_due <= 0`) are skipped entirely, so a stray matching transaction can't trivially mark a zero-tax invoice as paid.
 
 Use "Reset to Unpaid" to correct a mismatch, e.g. after testing.
+
+---
+
+## Member Breakdown
+
+The "Members" table on each corp card groups mining activity by **main character** — an alt's mining is combined into its main's total via Alliance Auth's `UserProfile.main_character`. A character with no registered main (or not registered in Alliance Auth at all) is listed under its own name as a fallback.
 
 ---
 
@@ -146,13 +161,13 @@ Use "Reset to Unpaid" to correct a mismatch, e.g. after testing.
 
 | URL | View | Access |
 |---|---|---|
-| `/miningtax/` | Dashboard | `basic_access` |
-| `/miningtax/sync/` | Manual sync | `basic_access` |
-| `/miningtax/alliance/` | Alliance billing | `mining_officer` |
-| `/miningtax/alliance/check-payments/` | Manual payment check | `mining_officer` |
-| `/miningtax/settings/` | Settings | `mining_officer` |
-| `/miningtax/pdf/corp/<id>/` | PDF per corp | `mining_officer` |
-| `/miningtax/pdf/all/` | ZIP of all corps | `mining_officer` |
+| `/miningtax/` | Dashboard | `basic_access` (or CEO) |
+| `/miningtax/sync/` | Manual sync (background task) | `basic_access` (or CEO) |
+| `/miningtax/alliance/` | Alliance billing (full for officers, own-corp-only for CEOs) | `mining_officer` or CEO |
+| `/miningtax/alliance/check-payments/` | Manual payment check (background task) | `mining_officer` only |
+| `/miningtax/settings/` | Settings | `mining_officer` only |
+| `/miningtax/pdf/corp/<id>/` | PDF per corp | `mining_officer` or CEO |
+| `/miningtax/pdf/all/` | ZIP of all corps | `mining_officer` only |
 
 ---
 

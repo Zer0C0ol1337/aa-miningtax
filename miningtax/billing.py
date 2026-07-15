@@ -6,7 +6,6 @@ from django.utils import timezone
 from .models import OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental, AllianceBillingRecord
 
 
-# Default-Steuersatz, falls für eine Kategorie noch kein TaxRate-Eintrag existiert
 DEFAULT_TAX_RATE = Decimal('10.00')
 
 
@@ -91,19 +90,40 @@ def calculate_entry_tax(entry, corporation=None):
     }
 
 
+def _get_main_character_name(character):
+    """
+    Resolves the main character name for a given character via
+    CharacterOwnership -> User -> UserProfile.main_character.
+    Falls back to the character's own name if it's not registered,
+    has no owning user, or no main character is set.
+    """
+    try:
+        ownership = character.character_ownership
+        user = ownership.user
+        main_char = user.profile.main_character
+        if main_char:
+            return main_char.character_name
+    except Exception:
+        pass
+    return character.character_name
+
+
 def calculate_alliance_billing(year, month):
     from .models import MiningLedgerEntry
 
     entries = MiningLedgerEntry.objects.filter(
         date__year=year, date__month=month
-    ).select_related('character', 'character__character_ownership__user')
+    ).select_related(
+        'character',
+        'character__character_ownership__user__profile__main_character',
+    )
 
     corps_data = {}
     alliance_totals = {'mined': Decimal('0'), 'tax': Decimal('0')}
 
     for entry in entries:
         corp = entry.character.corporation_id
-        corp_name = entry.character.corporation_name or 'Unbekannt'
+        corp_name = entry.character.corporation_name or 'Unknown'
 
         tax_info = calculate_entry_tax(entry, corporation=_get_corp_info(corp))
 
@@ -120,11 +140,12 @@ def calculate_alliance_billing(year, month):
         corp_entry['total_mined'] += entry.total_value
         corp_entry['total_tax'] += tax_info['tax_amount']
 
-        char_name = entry.character.character_name
-        if char_name not in corp_entry['members']:
-            corp_entry['members'][char_name] = {'mined': Decimal('0'), 'tax': Decimal('0')}
-        corp_entry['members'][char_name]['mined'] += entry.total_value
-        corp_entry['members'][char_name]['tax'] += tax_info['tax_amount']
+        # Group by main character — alts' mining rolls up into their main's total
+        member_name = _get_main_character_name(entry.character)
+        if member_name not in corp_entry['members']:
+            corp_entry['members'][member_name] = {'mined': Decimal('0'), 'tax': Decimal('0')}
+        corp_entry['members'][member_name]['mined'] += entry.total_value
+        corp_entry['members'][member_name]['tax'] += tax_info['tax_amount']
 
         cat = tax_info['category']
         if cat not in corp_entry['categories']:
@@ -140,8 +161,8 @@ def calculate_alliance_billing(year, month):
 
 def save_billing_records_for_month(year, month):
     """
-    Speichert AllianceBillingRecord für alle Corps eines Monats.
-    Wird täglich nach dem Sync aufgerufen um die Abrechnungen aktuell zu halten.
+    Saves an AllianceBillingRecord for all corps for a given month.
+    Called daily after the sync to keep billing records up to date.
     """
     data = calculate_alliance_billing(year, month)
     saved = 0
@@ -154,8 +175,8 @@ def save_billing_records_for_month(year, month):
 
 def save_billing_record(corp_id, corp_data, year, month):
     """
-    Speichert oder aktualisiert einen AllianceBillingRecord für eine Corp.
-    Überschreibt bestehende Records nur wenn noch nicht bezahlt.
+    Creates or updates an AllianceBillingRecord for a corp.
+    Only updates existing records that are not yet paid.
     """
     corp_obj = _get_corp_info(corp_id)
     if not corp_obj:
@@ -167,7 +188,6 @@ def save_billing_record(corp_id, corp_data, year, month):
 
     total_due = corp_data['total_tax'] + rental_total
 
-    # Nur aktualisieren wenn noch nicht bezahlt — bezahlte Records bleiben unverändert
     record, created = AllianceBillingRecord.objects.get_or_create(
         corporation=corp_obj,
         month=month,
@@ -189,7 +209,6 @@ def save_billing_record(corp_id, corp_data, year, month):
     )
 
     if not created and not record.paid:
-        # Noch nicht bezahlt — Daten aktualisieren
         record.total_mined_value = corp_data['total_mined']
         record.mining_tax_amount = corp_data['total_tax']
         record.moon_rental_total = rental_total
@@ -208,7 +227,7 @@ def save_billing_record(corp_id, corp_data, year, month):
 
 
 def mark_corp_paid(corp_id, corp_data, year, month):
-    """Speichert die Abrechnung und markiert sie als bezahlt."""
+    """Saves the billing record and marks it as paid."""
     record = save_billing_record(corp_id, corp_data, year, month)
     if record:
         record.paid = True
@@ -217,7 +236,6 @@ def mark_corp_paid(corp_id, corp_data, year, month):
     return record
 
 
-# Corp-Info Cache
 _corp_cache = {}
 
 

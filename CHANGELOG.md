@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.7.0] - 2026-07-14
+
+### Changed
+- Reduced log verbosity: per-observer, per-journal-entry, and per-record detail moved from INFO to DEBUG level, so a full sync no longer floods the log for large alliances. Only sync summaries, newly auto-registered characters, detected payments, and warnings/errors remain at INFO
+- Log level can be temporarily raised back to DEBUG in `local.py` for deep debugging without touching code
+
+## [0.6.9] - 2026-07-14
+
+### Added
+- Member breakdown in the alliance overview now groups by main character — alts' mining rolls up into their main's total instead of listing every character separately
+
+## [0.6.8] - 2026-07-14
+
+### Added
+- CEOs viewing the alliance overview now see only their own corporation, with a banner explaining the restriction
+- Payment reason keyword shown at the top of the alliance overview with a one-click copy button, so officers/CEOs know exactly what to put in the in-game wallet transfer description
+
+### Changed
+- Settings page and alliance-wide actions (Check Payments Now, tax rates, moon rentals, alliance moons, treasury config) now require the real `mining_officer` permission or superuser status — CEO auto-access no longer grants these, only the billing view for their own corp
+- `mark_paid` / `mark_unpaid` now verify a CEO-only user is acting on their own corporation before allowing the action
+
+## [0.6.7] - 2026-07-14
+
+### Added
+- CEOs automatically get officer-level billing access via `EveCorporationInfo.ceo_id`, without needing the `mining_officer` permission assigned manually
+
+### Changed
+- Permission label changed from "Can manage Mining Tax" to "Can access Alliance Billing and Settings (Mining Officer)" for clarity in the admin
+
+## [0.6.6] - 2026-07-14
+
+### Changed
+- "Sync Now" and "Check Payments Now" now dispatch as background Celery tasks instead of running synchronously in the request, avoiding timeouts on large datasets (many characters, many corp observers, 304-handling)
+
+## [0.6.5] - 2026-07-14
+
+### Fixed
+- Explicit `related_name` on `MoonRental.corporation` and `TreasuryConfig.corporation` to avoid a reverse accessor clash with Alliance Auth's built-in `moons` app, which also defines a `MoonRental` model
+
 ## [0.6.4] - 2026-07-14
 
 ### Added

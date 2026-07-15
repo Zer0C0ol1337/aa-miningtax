@@ -10,7 +10,7 @@ class General(models.Model):
         verbose_name_plural = 'general'
         permissions = (
             ('basic_access', 'Can view Mining Tax'),
-            ('mining_officer', 'Can manage Mining Tax'),
+            ('mining_officer', 'Can access Alliance Billing and Settings (Mining Officer)'),
         )
 
 

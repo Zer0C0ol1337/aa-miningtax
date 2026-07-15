@@ -13,6 +13,7 @@
             <a href="{% url 'miningtax:dashboard' %}" class="btn btn-outline-secondary">
                 ⛏️ {% trans "My Ledger" %}
             </a>
+            {% if is_full_officer %}
             <a href="{% url 'miningtax:settings' %}" class="btn btn-outline-secondary">
                 ⚙️ {% trans "Settings" %}
             </a>
@@ -24,6 +25,7 @@
                class="btn btn-success">
                 📦 {% trans "Download All as ZIP" %}
             </a>
+            {% endif %}
         </div>
     </div>
 
@@ -33,6 +35,32 @@
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
     {% endfor %}
+
+    {% if restricted_to_corp %}
+    <div class="alert alert-info">
+        <i class="fas fa-info-circle"></i>
+        {% trans "You're viewing billing for your own corporation only." %}
+    </div>
+    {% endif %}
+
+    {% if payment_keyword %}
+    <div class="alert alert-secondary d-flex align-items-center justify-content-between">
+        <div>
+            <i class="fas fa-wallet"></i>
+            {% trans "When transferring the tax payment in-game, use this as the reason:" %}
+            <code id="payment-keyword-text" class="ms-1">{{ payment_keyword }}</code>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyPaymentKeyword()">
+            <i class="fas fa-copy"></i> {% trans "Copy" %}
+        </button>
+    </div>
+    <script>
+    function copyPaymentKeyword() {
+        const text = document.getElementById('payment-keyword-text').innerText;
+        navigator.clipboard.writeText(text);
+    }
+    </script>
+    {% endif %}
 
     <div class="d-flex gap-2 align-items-center mb-4">
         <a href="?year={{ prev_year }}&month={{ prev_month }}" class="btn btn-sm btn-outline-primary">
