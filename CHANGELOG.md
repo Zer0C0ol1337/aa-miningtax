@@ -1,5 +1,31 @@
 # Changelog
 
+
+## [0.7.6] - 2026-07-14
+
+### Added
+- "Gas" added as a standard, editable tax rate category alongside R4/R8/R16/R32/R64/Ore/Ice, and as a selectable category for Alliance Moons
+- Gas cloud materials (Cytoserocin, Mykoserocin, Fullerite, Tricarboxyl Vapor variants) are now automatically categorized as "Gas" by matching their ESI-reported name, rather than relying on a static list of type IDs
+
+
+## [0.7.5] - 2026-07-14
+
+### Added
+- All standard tax rate categories (Default, Ore, Ice, R4, R8, R16, R32, R64) are now auto-created and guaranteed to appear in the Settings UI, not just "Default" — officers never need a superadmin/developer to add a missing category row
+
+
+## [0.7.4] - 2026-07-14
+
+### Added
+- Alliance filter dropdown added before the corporation dropdown in Moon Rentals and Treasury settings — pick an alliance first to narrow down the corporation list instead of scrolling through every corp in the database
+
+
+## [0.7.3] - 2026-07-14
+
+### Added
+- Personal dashboard now has month navigation (previous/next), matching the alliance overview
+- "Default" tax rate (fallback for unrecognized ore categories) is now auto-created and editable in the Settings UI — officers no longer need a superadmin/developer to adjust it
+
 ## [0.7.2] - 2026-07-14
 
 ### Changed

@@ -37,6 +37,16 @@
     </div>
     {% endfor %}
 
+    <div class="d-flex gap-2 align-items-center mb-4">
+        <a href="?year={{ prev_year }}&month={{ prev_month }}" class="btn btn-sm btn-outline-primary">
+            ◀ {% trans "Previous Month" %}
+        </a>
+        <span class="fw-bold">{{ month }}</span>
+        <a href="?year={{ next_year }}&month={{ next_month }}" class="btn btn-sm btn-outline-primary">
+            {% trans "Next Month" %} ▶
+        </a>
+    </div>
+
     <div class="row mb-4">
         <div class="col-md-6">
             <div class="card">
@@ -90,7 +100,7 @@
             {% empty %}
             <tr>
                 <td colspan="8" class="text-center text-muted">
-                    {% trans "No mining data for this month. Data is synced automatically every day." %}
+                    {% trans "No mining data for this month." %}
                 </td>
             </tr>
             {% endfor %}

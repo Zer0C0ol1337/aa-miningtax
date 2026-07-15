@@ -142,6 +142,15 @@
           <form method="post" action="{% url 'miningtax:settings_add_rental' %}">
             {% csrf_token %}
             <div class="row g-3">
+              <div class="col-md-2">
+                <label class="form-label">{% trans "Alliance" %}</label>
+                <select id="rental_alliance_filter" class="form-control">
+                  <option value="">{% trans "All" %}</option>
+                  {% for alliance in alliances %}
+                    <option value="{{ alliance.alliance_id }}">{{ alliance.alliance_name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
               <div class="col-md-3">
                 <label class="form-label">{% trans "Corporation" %}</label>
                 {{ rental_form.corporation }}
@@ -150,7 +159,7 @@
                 <label class="form-label">{% trans "Moon Name" %}</label>
                 {{ rental_form.moon_name }}
               </div>
-              <div class="col-md-3">
+              <div class="col-md-2">
                 <label class="form-label">{% trans "Structure Name (Ledger Match)" %}</label>
                 {{ rental_form.structure_name }}
               </div>
@@ -334,7 +343,16 @@
           <form method="post" action="{% url 'miningtax:settings_add_treasury' %}">
             {% csrf_token %}
             <div class="row g-3">
-              <div class="col-md-6">
+              <div class="col-md-3">
+                <label class="form-label">{% trans "Alliance" %}</label>
+                <select id="treasury_alliance_filter" class="form-control">
+                  <option value="">{% trans "All" %}</option>
+                  {% for alliance in alliances %}
+                    <option value="{{ alliance.alliance_id }}">{{ alliance.alliance_name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-3">
                 <label class="form-label">{{ treasury_form.corporation.label }}</label>
                 {{ treasury_form.corporation }}
               </div>
@@ -427,5 +445,30 @@ document.getElementById('editMoonModal').addEventListener('show.bs.modal', funct
   document.getElementById('edit_moon_type').value     = btn.getAttribute('data-moon-type');
   document.getElementById('edit_moon_taxfree').checked = btn.getAttribute('data-moon-taxfree') === 'true';
 });
+
+// Filters a corporation <select> by alliance using each <option>'s
+// data-alliance attribute, based on the chosen value in an alliance <select>.
+function wireAllianceFilter(allianceSelectId, corpSelectId) {
+  const allianceSelect = document.getElementById(allianceSelectId);
+  const corpSelect = document.getElementById(corpSelectId);
+  if (!allianceSelect || !corpSelect) return;
+
+  allianceSelect.addEventListener('change', function() {
+    const chosen = allianceSelect.value;
+    let firstVisible = null;
+    for (const opt of corpSelect.options) {
+      const allianceId = opt.getAttribute('data-alliance') || '';
+      const visible = !chosen || allianceId === chosen;
+      opt.hidden = !visible;
+      if (visible && firstVisible === null) firstVisible = opt;
+    }
+    if (corpSelect.selectedOptions.length && corpSelect.selectedOptions[0].hidden && firstVisible) {
+      corpSelect.value = firstVisible.value;
+    }
+  });
+}
+
+wireAllianceFilter('rental_alliance_filter', 'id_corporation');
+wireAllianceFilter('treasury_alliance_filter', 'id_treasury_corporation');
 </script>
 {% endblock %}

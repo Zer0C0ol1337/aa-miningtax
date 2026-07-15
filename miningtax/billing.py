@@ -6,6 +6,11 @@ from django.utils import timezone
 from .models import OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental, AllianceBillingRecord
 
 
+# Hardcoded fallback used only if no "Default" TaxRate row exists in the DB
+# at all (e.g. right after install, before populate_ore_categories creates
+# one). Once a "Default" row exists, get_tax_rate() falls back to it and
+# it's fully editable by officers in the Settings UI — no code change
+# needed to adjust the rate for unrecognized ore categories.
 DEFAULT_TAX_RATE = Decimal('10.00')
 
 
@@ -21,7 +26,10 @@ def get_tax_rate(category):
         rate_obj = TaxRate.objects.get(ore_category=category)
         return rate_obj.tax_rate
     except TaxRate.DoesNotExist:
-        return DEFAULT_TAX_RATE
+        try:
+            return TaxRate.objects.get(ore_category='Default').tax_rate
+        except TaxRate.DoesNotExist:
+            return DEFAULT_TAX_RATE
 
 
 def is_excluded_by_fleet_session(entry, ore_category):
@@ -64,6 +72,15 @@ def is_excluded_by_moon_rental(entry, corporation):
 
 def calculate_entry_tax(entry, corporation=None):
     category = get_ore_category(entry.type_id)
+
+    # Gas cloud materials (Cytoserocin, Mykoserocin, Fullerite, Tricarboxyl
+    # Vapor) aren't in the static OreCategory table with verified type_ids,
+    # so they're recognized here by name instead — safer than guessing
+    # type_ids, and adapts automatically to whatever ESI reports.
+    if category == 'Default' and entry.type_name:
+        name_lower = entry.type_name.lower()
+        if any(k in name_lower for k in ('cytoserocin', 'mykoserocin', 'fullerite', 'tricarboxyl')):
+            category = 'Gas'
 
     excluded = (
         is_excluded_by_fleet_session(entry, category)
@@ -140,7 +157,6 @@ def calculate_alliance_billing(year, month):
         corp_entry['total_mined'] += entry.total_value
         corp_entry['total_tax'] += tax_info['tax_amount']
 
-        # Group by main character — alts' mining rolls up into their main's total
         member_name = _get_main_character_name(entry.character)
         if member_name not in corp_entry['members']:
             corp_entry['members'][member_name] = {'mined': Decimal('0'), 'tax': Decimal('0')}

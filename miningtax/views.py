@@ -102,13 +102,18 @@ def _next_month(year, month):
 
 @check_access(has_basic_access)
 def dashboard(request):
-    user_character_ids = request.user.character_ownerships.all().values_list('character_id', flat=True)
+    from calendar import month_name
 
     today = date.today()
+    year = int(request.GET.get('year', today.year))
+    month = int(request.GET.get('month', today.month))
+
+    user_character_ids = request.user.character_ownerships.all().values_list('character_id', flat=True)
+
     entries = MiningLedgerEntry.objects.filter(
         character_id__in=user_character_ids,
-        date__year=today.year,
-        date__month=today.month,
+        date__year=year,
+        date__month=month,
     ).select_related('character').order_by('-date')
 
     rows = []
@@ -127,11 +132,20 @@ def dashboard(request):
         total_mined_value += entry.total_value
         total_tax += tax_info['tax_amount']
 
+    prev_year, prev_month = _prev_month(year, month)
+    next_year, next_month = _next_month(year, month)
+
     context = {
         'rows': rows,
         'total_mined_value': total_mined_value,
         'total_tax': total_tax,
-        'month': today.strftime('%B %Y'),
+        'month': f'{month_name[month]} {year}',
+        'year': year,
+        'month_num': month,
+        'prev_year': prev_year,
+        'prev_month': prev_month,
+        'next_year': next_year,
+        'next_month': next_month,
         'is_officer': has_officer_access(request.user),
         'is_full_officer': has_full_officer_access(request.user),
     }
@@ -355,10 +369,33 @@ def check_payments_now(request):
 
 @check_access(has_full_officer_access)
 def settings_view(request):
+    # Ensure all standard tax rate categories always exist as editable rows,
+    # so officers never need a superadmin/developer to add a missing one
+    # via the database or code. Existing rows are left untouched.
+    _STANDARD_CATEGORIES = {
+        'Default': 10.00,
+        'Ore': 10.00,
+        'Ice': 10.00,
+        'Gas': 10.00,
+        'R4': 0.00,
+        'R8': 0.00,
+        'R16': 0.00,
+        'R32': 20.00,
+        'R64': 30.00,
+    }
+    for category, default_rate in _STANDARD_CATEGORIES.items():
+        TaxRate.objects.get_or_create(
+            ore_category=category,
+            defaults={'tax_rate': default_rate}
+        )
+
     tax_rates = TaxRate.objects.all().order_by('ore_category')
     moon_rentals = MoonRental.objects.select_related('corporation').order_by('corporation__corporation_name')
     alliance_moons = AllianceMoon.objects.all().order_by('solar_system_name', 'name')
     treasury_configs = TreasuryConfig.objects.select_related('corporation').all()
+
+    from allianceauth.eveonline.models import EveAllianceInfo
+    alliances = EveAllianceInfo.objects.all().order_by('alliance_name')
 
     tax_forms = [(tr, TaxRateForm(instance=tr, prefix=f'tax_{tr.pk}')) for tr in tax_rates]
 
@@ -367,6 +404,7 @@ def settings_view(request):
         'moon_rentals': moon_rentals,
         'alliance_moons': alliance_moons,
         'treasury_configs': treasury_configs,
+        'alliances': alliances,
         'rental_form': MoonRentalForm(),
         'moon_form': AllianceMoonForm(),
         'treasury_form': TreasuryConfigForm(),
