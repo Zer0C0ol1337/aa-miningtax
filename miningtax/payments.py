@@ -6,6 +6,16 @@ from .models import TreasuryConfig, AllianceBillingRecord
 logger = logging.getLogger(__name__)
 
 
+def payment_code_for(corp_id, month, year):
+    """
+    Builds the expected wallet transfer reason code for a corp/month/year,
+    e.g. "98606304/07/2026". Members put this exact string in the reason
+    field when transferring their tax payment, and the payment check
+    matches on it — unique per corp per month, no manual keyword needed.
+    """
+    return f"{corp_id}/{month:02d}/{year}"
+
+
 def _get_treasury_token_for_config(config):
     """
     Gets a valid token with the esi-wallet.read_corporation_wallets.v1 scope
@@ -37,11 +47,15 @@ def _get_treasury_token_for_config(config):
 def _check_payments_for_treasury(config, year, month, open_records):
     """
     Checks the wallet journal of ONE treasury corp against the given open
-    billing records. Returns the number of matches.
+    billing records. Matches require the journal reason to be EXACTLY the
+    per-corp code "{corp_id}/{month}/{year}" (after stripping whitespace),
+    not just a substring — this rules out any ambiguity where one corp's
+    code could accidentally be contained within another string, plus
+    amount + sender corp are checked as before.
 
     Per-record and per-journal-entry detail is logged at DEBUG to avoid
-    flooding the log when there are many open records or a large journal —
-    only matches (successes) and errors are logged at INFO/WARNING.
+    flooding the log — only matches (successes) and errors are logged at
+    INFO/WARNING.
     """
     from .services import _get_esi_client
 
@@ -63,19 +77,19 @@ def _check_payments_for_treasury(config, year, month, open_records):
         return 0
 
     matched = 0
-    keyword = config.payment_reason_keyword.lower()
 
     for record in open_records:
         paying_corp_id = record.corporation.corporation_id
         paying_corp_name = record.corporation.corporation_name
+        expected_code = payment_code_for(paying_corp_id, month, year)
 
         found = False
         for entry in journal:
-            reason = (getattr(entry, 'reason', '') or '')
+            reason = (getattr(entry, 'reason', '') or '').strip()
             first_party_id = getattr(entry, 'first_party_id', None)
             amount = getattr(entry, 'amount', 0)
 
-            if keyword not in reason.lower():
+            if reason != expected_code:
                 continue
             if first_party_id != paying_corp_id:
                 continue
@@ -90,14 +104,14 @@ def _check_payments_for_treasury(config, year, month, open_records):
 
             logger.info(
                 f'✅ Payment detected (via {config.corporation.corporation_name}): {paying_corp_name} — '
-                f'{amount} ISK received (due: {record.total_due} ISK) — automatically marked as paid'
+                f'{amount} ISK received (code "{expected_code}", due: {record.total_due} ISK) — automatically marked as paid'
             )
             matched += 1
             found = True
             break
 
         if not found:
-            logger.debug(f'No matching payment found for {paying_corp_name} in treasury {config.corporation.corporation_name}')
+            logger.debug(f'No matching payment found for {paying_corp_name} (expected code "{expected_code}") in treasury {config.corporation.corporation_name}')
 
     return matched
 
@@ -106,7 +120,8 @@ def check_corp_payments(year, month):
     """
     Checks the wallet journals of ALL active treasury configs for incoming
     payments and matches them against open AllianceBillingRecord entries
-    (amount + sender corp + reason keyword).
+    using the exact per-corp code "{corp_id}/{month}/{year}" in the reason
+    field, plus amount + sender corp.
     A billing record already matched in one treasury is not checked again
     in another.
     """

@@ -224,12 +224,19 @@ def alliance_overview(request):
             if cid == restricted_to_corp
         }
 
-    # Show the payment reason keyword so officers/CEOs know what to put in
-    # the wallet transfer description
-    payment_keyword = None
-    active_treasury = TreasuryConfig.objects.filter(active=True).first()
-    if active_treasury:
-        payment_keyword = active_treasury.payment_reason_keyword
+    # Each corp gets its own payment code ("{corp_id}/{month}/{year}") to
+    # put in the wallet transfer reason — only revealed from the 2nd of the
+    # following month onward, giving a day of buffer for the final sync
+    # after the billed month closes (the amount due can still shift while
+    # the month is ongoing).
+    from .payments import payment_code_for
+    from datetime import timedelta
+    today = date.today()
+    next_year, next_month = _next_month(year, month)
+    reveal_date = date(next_year, next_month, 1) + timedelta(days=1)
+    code_revealed = today >= reveal_date
+    for cid, cdata in corps_with_status.items():
+        cdata['payment_code'] = payment_code_for(cid, month, year) if code_revealed else None
 
     prev_year, prev_month = _prev_month(year, month)
     next_year, next_month = _next_month(year, month)
@@ -244,7 +251,6 @@ def alliance_overview(request):
         'next_year': next_year,
         'next_month': next_month,
         'restricted_to_corp': restricted_to_corp,
-        'payment_keyword': payment_keyword,
         'is_full_officer': has_full_officer_access(request.user),
     }
     return render(request, 'miningtax/alliance_overview.html', context)

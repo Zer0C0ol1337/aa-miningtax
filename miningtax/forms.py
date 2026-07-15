@@ -49,17 +49,15 @@ class AllianceMoonForm(forms.ModelForm):
         }
 
 
-# Formular für die Treasury-Konfiguration — welche Corp-Wallet auf Zahlungen geprüft wird
+# payment_reason_keyword is intentionally excluded — payments are now matched
+# on an automatically generated per-corp code ("{corp_id}/{month}/{year}")
+# instead of a free-text keyword, so there's nothing to configure here.
 class TreasuryConfigForm(forms.ModelForm):
     class Meta:
         model = TreasuryConfig
-        fields = ['corporation', 'payment_reason_keyword', 'wallet_division', 'active']
+        fields = ['corporation', 'wallet_division', 'active']
         widgets = {
             'corporation': forms.Select(attrs={'class': 'form-control'}),
-            'payment_reason_keyword': forms.TextInput(attrs={
-                'class': 'form-control',
-                'placeholder': 'z.B. Corp Steuer',
-            }),
             'wallet_division': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'max': '7'}),
             'active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
@@ -67,6 +65,5 @@ class TreasuryConfigForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['corporation'].queryset = EveCorporationInfo.objects.all().order_by('corporation_name')
-        self.fields['corporation'].label = 'Empfänger-Corp (Treasury)'
-        self.fields['payment_reason_keyword'].label = 'Zahlungsgrund-Stichwort'
-        self.fields['wallet_division'].label = 'Wallet-Division (1-7)'
+        self.fields['corporation'].label = 'Receiving Corp (Treasury)'
+        self.fields['wallet_division'].label = 'Wallet Division (1-7)'

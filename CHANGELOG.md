@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.2] - 2026-07-14
+
+### Changed
+- Payment code is now revealed from the 2nd of the following month onward (instead of immediately after month end), giving a one-day buffer for the final daily sync to settle the billed month's totals before the code is shown
+
+## [0.7.1] - 2026-07-14
+
+### Changed
+- Payment matching now uses per-corp/month unique codes ("{corp_id}/{month}/{year}") instead of a free-text keyword, matched with exact reason equality instead of substring containment — eliminates any ambiguity between corps and removes the need to configure a keyword
+- `TreasuryConfig.payment_reason_keyword` removed from the Settings form (field remains in the model for backward compatibility but is no longer used in matching)
+
 ## [0.7.0] - 2026-07-14
 
 ### Changed
@@ -15,7 +26,7 @@
 
 ### Added
 - CEOs viewing the alliance overview now see only their own corporation, with a banner explaining the restriction
-- Payment reason keyword shown at the top of the alliance overview with a one-click copy button, so officers/CEOs know exactly what to put in the in-game wallet transfer description
+- Payment reason keyword shown at the top of the alliance overview with a one-click copy button (superseded in 0.7.1 by per-corp codes)
 
 ### Changed
 - Settings page and alliance-wide actions (Check Payments Now, tax rates, moon rentals, alliance moons, treasury config) now require the real `mining_officer` permission or superuser status — CEO auto-access no longer grants these, only the billing view for their own corp

@@ -283,7 +283,7 @@
     <div class="tab-pane fade" id="tab-treasury">
       <div class="alert alert-info">
         <i class="fas fa-info-circle"></i>
-        {% trans "The configured corporation's wallet is checked for incoming payments. A payment counts as received when the wallet journal reason contains the configured keyword, the amount is sufficient, and the sending corporation matches an open billing record." %}
+        {% trans "The configured corporation's wallet is checked for incoming payments. Each corp/month gets a unique payment code (corp ID/month/year) shown on the alliance overview — a payment counts as received when this exact code appears in the wallet journal reason, the amount is sufficient, and the sending corporation matches the open billing record." %}
       </div>
 
       <div class="card mb-4">
@@ -293,7 +293,6 @@
             <thead class="table-dark">
               <tr>
                 <th>{% trans "Corporation" %}</th>
-                <th>{% trans "Payment Reason Keyword" %}</th>
                 <th>{% trans "Wallet Division" %}</th>
                 <th>{% trans "Active" %}</th>
                 <th style="width:100px"></th>
@@ -303,7 +302,6 @@
               {% for config in treasury_configs %}
               <tr>
                 <td class="align-middle">{{ config.corporation.corporation_name }}</td>
-                <td class="align-middle"><code>{{ config.payment_reason_keyword }}</code></td>
                 <td class="align-middle">{{ config.wallet_division }}</td>
                 <td class="align-middle">
                   {% if config.active %}
@@ -323,7 +321,7 @@
                 </td>
               </tr>
               {% empty %}
-              <tr><td colspan="5" class="text-center text-muted py-3">{% trans "No treasury configuration found." %}</td></tr>
+              <tr><td colspan="4" class="text-center text-muted py-3">{% trans "No treasury configuration found." %}</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -336,19 +334,15 @@
           <form method="post" action="{% url 'miningtax:settings_add_treasury' %}">
             {% csrf_token %}
             <div class="row g-3">
-              <div class="col-md-4">
+              <div class="col-md-6">
                 <label class="form-label">{{ treasury_form.corporation.label }}</label>
                 {{ treasury_form.corporation }}
               </div>
-              <div class="col-md-4">
-                <label class="form-label">{{ treasury_form.payment_reason_keyword.label }}</label>
-                {{ treasury_form.payment_reason_keyword }}
-              </div>
-              <div class="col-md-2">
+              <div class="col-md-3">
                 <label class="form-label">{{ treasury_form.wallet_division.label }}</label>
                 {{ treasury_form.wallet_division }}
               </div>
-              <div class="col-md-2 d-flex align-items-end">
+              <div class="col-md-3 d-flex align-items-end">
                 <div class="form-check mb-2">
                   {{ treasury_form.active }}
                   <label class="form-check-label">{% trans "Active" %}</label>

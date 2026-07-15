@@ -43,25 +43,6 @@
     </div>
     {% endif %}
 
-    {% if payment_keyword %}
-    <div class="alert alert-secondary d-flex align-items-center justify-content-between">
-        <div>
-            <i class="fas fa-wallet"></i>
-            {% trans "When transferring the tax payment in-game, use this as the reason:" %}
-            <code id="payment-keyword-text" class="ms-1">{{ payment_keyword }}</code>
-        </div>
-        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyPaymentKeyword()">
-            <i class="fas fa-copy"></i> {% trans "Copy" %}
-        </button>
-    </div>
-    <script>
-    function copyPaymentKeyword() {
-        const text = document.getElementById('payment-keyword-text').innerText;
-        navigator.clipboard.writeText(text);
-    }
-    </script>
-    {% endif %}
-
     <div class="d-flex gap-2 align-items-center mb-4">
         <a href="?year={{ prev_year }}&month={{ prev_month }}" class="btn btn-sm btn-outline-primary">
             ◀ {% trans "Previous Month" %}
@@ -149,6 +130,27 @@
         <div class="collapse" id="corp-{{ corp_id }}">
             <div class="card-body">
 
+                {% if not corp.paid %}
+                {% if corp.payment_code %}
+                <div class="alert alert-secondary d-flex align-items-center justify-content-between py-2">
+                    <div>
+                        <i class="fas fa-wallet"></i>
+                        {% trans "Payment reason for this transfer:" %}
+                        <code id="payment-code-{{ corp_id }}" class="ms-1">{{ corp.payment_code }}</code>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            onclick="copyPaymentCode('{{ corp_id }}')">
+                        <i class="fas fa-copy"></i> {% trans "Copy" %}
+                    </button>
+                </div>
+                {% else %}
+                <div class="alert alert-light text-muted py-2 small">
+                    <i class="fas fa-clock"></i>
+                    {% trans "The payment code will be available from the 2nd of next month." %}
+                </div>
+                {% endif %}
+                {% endif %}
+
                 <h6>{% trans "Billing Summary" %}</h6>
                 <table class="table table-sm">
                     <tbody>
@@ -221,4 +223,11 @@
     {% endfor %}
 
 </div>
+
+<script>
+function copyPaymentCode(corpId) {
+    const text = document.getElementById('payment-code-' + corpId).innerText;
+    navigator.clipboard.writeText(text);
+}
+</script>
 {% endblock %}
