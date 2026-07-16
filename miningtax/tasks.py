@@ -8,15 +8,18 @@ from .services import sync_all_characters, sync_all_corp_observers, update_marke
 logger = logging.getLogger(__name__)
 
 
-# Daily sync: personal ledgers + corp observer + market prices + billing records + payment check
+# Daily sync: personal ledgers + corp observer + market prices + sovereignty
+# + billing records + payment check
 @shared_task
 def daily_mining_sync():
     from .billing import save_billing_records_for_month
     from .payments import check_corp_payments
+    from .services import sync_sov_systems
 
     synced_chars = sync_all_characters()
     synced_corps = sync_all_corp_observers()
     priced = update_market_prices()
+    sov_systems = sync_sov_systems()
 
     today = date.today()
     billing_saved = save_billing_records_for_month(today.year, today.month)
@@ -26,6 +29,7 @@ def daily_mining_sync():
         f'{synced_chars} personal entries, '
         f'{synced_corps} corp observer entries, '
         f'{priced} prices updated, '
+        f'{sov_systems} sovereignty systems tracked, '
         f'{billing_saved} billing records saved, '
         f'{payments_matched} payments automatically detected'
     )
@@ -52,9 +56,7 @@ def sync_character_mining_task(character_id):
 
 
 # Triggered by the "Sync Now" button — runs in the background so the request
-# doesn't time out on large datasets. Syncs the requesting user's own
-# characters plus the corp observer sync (which can be slow with many
-# structures/members) and market prices.
+# doesn't time out on large datasets.
 @shared_task
 def manual_sync_task(user_id):
     from django.contrib.auth.models import User
@@ -86,9 +88,7 @@ def manual_sync_task(user_id):
     return result
 
 
-# Triggered by the "Check Payments Now" button — runs in the background so
-# the request doesn't time out while fetching and matching wallet journal
-# entries against open billing records.
+# Triggered by the "Check Payments Now" button — runs in the background.
 @shared_task
 def check_payments_task(year, month, requested_by=None):
     from .payments import check_corp_payments

@@ -4,6 +4,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from .models import OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental, AllianceBillingRecord
+from .services import STRUCTURE_ID_THRESHOLD
 
 
 # Hardcoded fallback used only if no "Default" TaxRate row exists in the DB
@@ -52,11 +53,31 @@ def is_excluded_by_fleet_session(entry, ore_category):
 
 
 def is_excluded_by_alliance_moon(entry):
+    # A tax-free alliance moon exempts ONLY ore mined at that moon's structure,
+    # not everything in the whole solar system. Moon mining always comes from a
+    # corp mining observer, so such entries carry the structure ID in
+    # solar_system_id (> STRUCTURE_ID_THRESHOLD) and the structure name in
+    # solar_system_name. Belt and anomaly mining (incl. Mercoxit) comes from the
+    # personal ledger with a real system id below the threshold — so gating on
+    # the threshold guarantees belts/anomalies are never wrongly exempted, even
+    # if they share a system with a tax-free moon.
     if not entry.solar_system_name:
         return False
+    if not entry.solar_system_id or entry.solar_system_id <= STRUCTURE_ID_THRESHOLD:
+        return False
+
+    entry_structure = entry.solar_system_name.strip().lower()
     for moon in AllianceMoon.objects.filter(is_tax_free=True):
-        if moon.solar_system_name and moon.solar_system_name.lower() in entry.solar_system_name.lower():
-            return True
+        if moon.structure_name:
+            # Precise per-structure match — required when several moon structures
+            # share one system, so only the named structure is exempted.
+            if moon.structure_name.strip().lower() == entry_structure:
+                return True
+        elif moon.solar_system_name:
+            # Backward-compatible fallback for moons configured before the
+            # structure_name field existed (substring match on the system field).
+            if moon.solar_system_name.lower() in entry_structure:
+                return True
     return False
 
 

@@ -63,6 +63,12 @@ class AllianceMoon(models.Model):
 
     name = models.CharField(max_length=255)
     solar_system_name = models.CharField(max_length=255, blank=True)
+    # Exact in-game structure name (refinery / moon drill), matched against a
+    # mining observer entry's structure name. Set this when several moon
+    # structures share one solar system so that ONLY this structure is exempted
+    # when is_tax_free is on -- not every structure in the system. Leave blank to
+    # keep the legacy behaviour (substring match on the solar system).
+    structure_name = models.CharField(max_length=255, blank=True)
     ore_category = models.CharField(max_length=50, default='R64')
     moon_type = models.CharField(max_length=20, choices=MOON_TYPES, default='public')
     is_tax_free = models.BooleanField(default=False)
@@ -92,10 +98,6 @@ class FleetSession(models.Model):
         return self.name
 
 
-# related_name is set explicitly because Alliance Auth's built-in "moons" app
-# also defines a MoonRental model with a corporation FK — without a distinct
-# related_name both models generate the same reverse accessor
-# (EveCorporationInfo.moonrental_set), causing a fields.E304 system check error.
 class MoonRental(models.Model):
     corporation = models.ForeignKey(
         EveCorporationInfo, on_delete=models.CASCADE,
@@ -144,7 +146,7 @@ class TreasuryConfig(models.Model):
     )
     payment_reason_keyword = models.CharField(
         max_length=255, default='Corp Tax',
-        help_text='Text that must be present in the wallet journal reason (e.g. "Corp Tax")'
+        help_text='Legacy field, no longer used for matching (kept for backward compatibility)'
     )
     wallet_division = models.PositiveSmallIntegerField(
         default=1,
@@ -157,3 +159,41 @@ class TreasuryConfig(models.Model):
 
     def __str__(self):
         return f"Treasury: {self.corporation.corporation_name}"
+
+
+# Designates a corporation whose EVE sovereignty systems define WHERE mining
+# is taxable. When active, only mining reported from a system currently
+# held (per ESI's public sovereignty map) by this corporation counts toward
+# tax -- mining anywhere else is excluded (0% tax), same mechanism as
+# tax-free moons. The actual system list (SovSystem below) is refreshed
+# automatically by the daily sync, not maintained by hand.
+class SovFilterConfig(models.Model):
+    corporation = models.ForeignKey(
+        EveCorporationInfo, on_delete=models.CASCADE,
+        related_name='miningtax_sov_filter_configs',
+        help_text="Only mining within this corporation's current sovereignty systems is taxed"
+    )
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        default_permissions = ()
+
+    def __str__(self):
+        return f"Sov Filter: {self.corporation.corporation_name}"
+
+
+# Cache of systems currently held by a SovFilterConfig's corporation,
+# refreshed from ESI's public /sovereignty/map/ endpoint. Rebuilt fully on
+# each sync so it always reflects current sovereignty, never goes stale
+# from manual upkeep.
+class SovSystem(models.Model):
+    system_id = models.BigIntegerField(primary_key=True)
+    system_name = models.CharField(max_length=255)
+    corporation_id = models.BigIntegerField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        default_permissions = ()
+
+    def __str__(self):
+        return f"{self.system_name} ({self.corporation_id})"

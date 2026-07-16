@@ -21,6 +21,11 @@ urlpatterns = [
     path('settings/moon/<int:pk>/delete/', views.settings_delete_moon, name='settings_delete_moon'),
     path('settings/treasury/add/', views.settings_add_treasury, name='settings_add_treasury'),
     path('settings/treasury/<int:pk>/delete/', views.settings_delete_treasury, name='settings_delete_treasury'),
+    path('settings/register-corp/', views.settings_register_corp, name='settings_register_corp'),
+    path('settings/register-alliance-corps/', views.settings_register_alliance_corps, name='settings_register_alliance_corps'),
+    path('settings/sov-filter/add/', views.settings_add_sov_filter, name='settings_add_sov_filter'),
+    path('settings/sov-filter/<int:pk>/delete/', views.settings_delete_sov_filter, name='settings_delete_sov_filter'),
+    path('settings/sov-filter/sync-now/', views.settings_sync_sov_now, name='settings_sync_sov_now'),
 
     path('pdf/corp/<int:corp_id>/', pdf_views.download_corp_pdf, name='download_corp_pdf'),
     path('pdf/all/', pdf_views.download_all_corps_zip, name='download_all_corps_zip'),

@@ -1,6 +1,6 @@
 import logging
 import traceback
-from datetime import date
+from datetime import date, timedelta
 
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, redirect, get_object_or_404
@@ -9,9 +9,13 @@ from django.core.exceptions import PermissionDenied
 from django.contrib import messages
 from decimal import Decimal
 
-from .models import MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord, TreasuryConfig
+from .models import (
+    MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord,
+    TreasuryConfig, SovFilterConfig,
+)
 from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
-from .forms import TaxRateForm, MoonRentalForm, AllianceMoonForm, TreasuryConfigForm
+from .services import sync_character_mining, update_market_prices, sync_all_corp_observers
+from .forms import TaxRateForm, MoonRentalForm, AllianceMoonForm, TreasuryConfigForm, SovFilterConfigForm
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +25,6 @@ def has_basic_access(user):
         return True
     if user.has_perm('miningtax.basic_access'):
         return True
-    # Anyone with officer access (including auto-detected CEOs) also has basic access
     return has_officer_access(user)
 
 
@@ -53,8 +56,7 @@ def is_ceo_only(user):
     """
     True if the user only has officer access because they're a CEO
     (auto-detected), not because of the mining_officer permission or
-    superuser status. Used to restrict the alliance overview to their
-    own corp instead of showing every corp in the alliance.
+    superuser status.
     """
     if user.is_superuser or user.has_perm('miningtax.mining_officer'):
         return False
@@ -63,9 +65,21 @@ def is_ceo_only(user):
 
 def has_full_officer_access(user):
     """Real officer access — permission or superuser only, not the CEO
-    auto-bypass. Used for Settings and alliance-wide actions that
-    shouldn't be limited to a single corp."""
+    auto-bypass. Used for Settings and alliance-wide actions."""
     return user.is_superuser or user.has_perm('miningtax.mining_officer')
+
+
+def _own_alliance_ids(user):
+    """
+    The alliance ID(s) of the user's own registered characters — used to
+    scope corporation dropdowns to the officer's own alliance by default,
+    instead of every alliance/corp Alliance Auth has ever resolved via ESI.
+    """
+    return {
+        co.character.alliance_id
+        for co in user.character_ownerships.select_related('character').all()
+        if co.character.alliance_id
+    }
 
 
 def check_access(test_func):
@@ -152,9 +166,6 @@ def dashboard(request):
     return render(request, 'miningtax/dashboard.html', context)
 
 
-# Sync now — dispatches a background Celery task instead of running
-# synchronously in the request, avoiding timeouts on large datasets
-# (many characters, many corp observers, ESI 304-handling, etc.)
 @check_access(has_basic_access)
 def sync_now(request):
     from .tasks import manual_sync_task
@@ -228,8 +239,6 @@ def alliance_overview(request):
                 'total_due': total_due,
             }
 
-    # CEOs (without the mining_officer permission) only see their own corp,
-    # not the full alliance overview
     restricted_to_corp = None
     if is_ceo_only(request.user):
         restricted_to_corp = get_ceo_corp_id(request.user)
@@ -238,14 +247,7 @@ def alliance_overview(request):
             if cid == restricted_to_corp
         }
 
-    # Each corp gets its own payment code ("{corp_id}/{month}/{year}") to
-    # put in the wallet transfer reason — only revealed from the 2nd of the
-    # following month onward, giving a day of buffer for the final sync
-    # after the billed month closes (the amount due can still shift while
-    # the month is ongoing).
     from .payments import payment_code_for
-    from datetime import timedelta
-    today = date.today()
     next_year, next_month = _next_month(year, month)
     reveal_date = date(next_year, next_month, 1) + timedelta(days=1)
     code_revealed = today >= reveal_date
@@ -253,7 +255,6 @@ def alliance_overview(request):
         cdata['payment_code'] = payment_code_for(cid, month, year) if code_revealed else None
 
     prev_year, prev_month = _prev_month(year, month)
-    next_year, next_month = _next_month(year, month)
 
     context = {
         'corps': corps_with_status,
@@ -344,9 +345,6 @@ def mark_unpaid(request, corp_id):
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
 
-# Check payments now — dispatches a background Celery task instead of
-# running synchronously in the request, avoiding timeouts while fetching
-# and matching wallet journal entries.
 @check_access(has_full_officer_access)
 def check_payments_now(request):
     from .tasks import check_payments_task
@@ -369,11 +367,9 @@ def check_payments_now(request):
 
 @check_access(has_full_officer_access)
 def settings_view(request):
-    # Ensure all standard tax rate categories always exist as editable rows,
-    # so officers never need a superadmin/developer to add a missing one
-    # via the database or code. Existing rows are left untouched.
     _STANDARD_CATEGORIES = {
         'Default': 10.00,
+        'Mercoxit': 10.00,
         'Ore': 10.00,
         'Ice': 10.00,
         'Gas': 10.00,
@@ -393,9 +389,24 @@ def settings_view(request):
     moon_rentals = MoonRental.objects.select_related('corporation').order_by('corporation__corporation_name')
     alliance_moons = AllianceMoon.objects.all().order_by('solar_system_name', 'name')
     treasury_configs = TreasuryConfig.objects.select_related('corporation').all()
+    sov_filter_configs = SovFilterConfig.objects.select_related('corporation').all()
 
     from allianceauth.eveonline.models import EveAllianceInfo
-    alliances = EveAllianceInfo.objects.all().order_by('alliance_name')
+    alliance_ids = _own_alliance_ids(request.user)
+    if alliance_ids:
+        alliances = EveAllianceInfo.objects.filter(alliance_id__in=alliance_ids).order_by('alliance_name')
+    else:
+        alliances = EveAllianceInfo.objects.filter(
+            evecorporationinfo__isnull=False
+        ).distinct().order_by('alliance_name')
+
+    # Known structure names already seen in the ledger, for the Moon Rental
+    # "structure name" field's autocomplete — officers pick from what's
+    # actually been mined instead of typing it by hand.
+    known_structures = list(
+        MiningLedgerEntry.objects.exclude(solar_system_name='')
+        .values_list('solar_system_name', flat=True).distinct().order_by('solar_system_name')
+    )
 
     tax_forms = [(tr, TaxRateForm(instance=tr, prefix=f'tax_{tr.pk}')) for tr in tax_rates]
 
@@ -404,10 +415,13 @@ def settings_view(request):
         'moon_rentals': moon_rentals,
         'alliance_moons': alliance_moons,
         'treasury_configs': treasury_configs,
+        'sov_filter_configs': sov_filter_configs,
         'alliances': alliances,
-        'rental_form': MoonRentalForm(),
+        'known_structures': known_structures,
+        'rental_form': MoonRentalForm(alliance_ids=alliance_ids),
         'moon_form': AllianceMoonForm(),
-        'treasury_form': TreasuryConfigForm(),
+        'treasury_form': TreasuryConfigForm(alliance_ids=alliance_ids),
+        'sov_filter_form': SovFilterConfigForm(alliance_ids=alliance_ids),
     }
     return render(request, 'miningtax/settings.html', context)
 
@@ -430,7 +444,7 @@ def settings_save_taxrate(request, pk):
 @check_access(has_full_officer_access)
 def settings_add_rental(request):
     if request.method == 'POST':
-        form = MoonRentalForm(request.POST)
+        form = MoonRentalForm(request.POST, alliance_ids=_own_alliance_ids(request.user))
         if form.is_valid():
             form.save()
             logger.info(f'{request.user.username}: moon rental added for {form.instance.corporation}')
@@ -473,11 +487,11 @@ def settings_edit_moon(request, pk):
         form = AllianceMoonForm(request.POST, instance=moon)
         if form.is_valid():
             form.save()
-            logger.info(f'{request.user.username}: moon "{moon.name}" updated')
+            logger.info(f'{request.user.username}: moon "{moon.name}" updated → category={moon.ore_category}, tax_free={moon.is_tax_free}')
             messages.success(request, f'✅ Moon "{moon.name}" updated.')
         else:
             logger.warning(f'{request.user.username}: AllianceMoon edit form invalid: {form.errors}')
-            messages.error(request, f'❌ Error: {form.errors}')
+            messages.error(request, f'❌ Error updating moon: {form.errors}')
     return redirect('miningtax:settings')
 
 
@@ -495,7 +509,7 @@ def settings_delete_moon(request, pk):
 @check_access(has_full_officer_access)
 def settings_add_treasury(request):
     if request.method == 'POST':
-        form = TreasuryConfigForm(request.POST)
+        form = TreasuryConfigForm(request.POST, alliance_ids=_own_alliance_ids(request.user))
         if form.is_valid():
             form.save()
             logger.info(f'{request.user.username}: treasury config added for {form.instance.corporation}')
@@ -514,4 +528,117 @@ def settings_delete_treasury(request, pk):
         config.delete()
         logger.info(f'{request.user.username}: treasury config for {corp_name} deleted')
         messages.success(request, f'🗑️ Treasury configuration for {corp_name} deleted.')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_register_corp(request):
+    if request.method == 'POST':
+        from allianceauth.eveonline.models import EveCorporationInfo
+
+        raw_id = request.POST.get('corporation_id', '').strip()
+        try:
+            corp_id = int(raw_id)
+        except ValueError:
+            messages.error(request, f'❌ "{raw_id}" is not a valid corporation ID.')
+            return redirect('miningtax:settings')
+
+        if EveCorporationInfo.objects.filter(corporation_id=corp_id).exists():
+            messages.info(request, 'ℹ️ This corporation is already registered.')
+            return redirect('miningtax:settings')
+
+        try:
+            corp = EveCorporationInfo.objects.create_corporation(corporation_id=corp_id)
+            logger.info(f'{request.user.username}: registered corporation {corp.corporation_name} ({corp_id}) via ESI')
+            messages.success(request, f'✅ {corp.corporation_name} registered and now available in the dropdowns.')
+        except Exception as e:
+            logger.warning(f'{request.user.username}: failed to register corporation {corp_id}: {e}')
+            messages.error(request, f'❌ Could not fetch corporation {corp_id}: {e}')
+
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_register_alliance_corps(request):
+    if request.method == 'POST':
+        from allianceauth.eveonline.models import EveCorporationInfo
+        from .services import _get_esi_client
+
+        raw_id = request.POST.get('alliance_id', '').strip()
+        try:
+            alliance_id = int(raw_id)
+        except ValueError:
+            messages.error(request, f'❌ "{raw_id}" is not a valid alliance ID.')
+            return redirect('miningtax:settings')
+
+        try:
+            esi = _get_esi_client()
+            corp_ids = esi.client.Alliance.GetAlliancesAllianceIdCorporations(
+                alliance_id=alliance_id
+            ).results()
+        except Exception as e:
+            logger.warning(f'{request.user.username}: failed to fetch corp list for alliance {alliance_id}: {e}')
+            messages.error(request, f'❌ Could not fetch corporations for this alliance: {e}')
+            return redirect('miningtax:settings')
+
+        registered = 0
+        already_present = 0
+        failed = 0
+
+        for corp_id in corp_ids:
+            if EveCorporationInfo.objects.filter(corporation_id=corp_id).exists():
+                already_present += 1
+                continue
+            try:
+                EveCorporationInfo.objects.create_corporation(corporation_id=corp_id)
+                registered += 1
+            except Exception as e:
+                logger.warning(f'{request.user.username}: failed to register corp {corp_id} from alliance {alliance_id}: {e}')
+                failed += 1
+
+        logger.info(
+            f'{request.user.username}: registered alliance {alliance_id} corps — '
+            f'{registered} new, {already_present} already present, {failed} failed'
+        )
+        messages.success(
+            request,
+            f'✅ {registered} new corporation(s) registered, {already_present} already present'
+            + (f', {failed} failed' if failed else '') + '.'
+        )
+
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_add_sov_filter(request):
+    if request.method == 'POST':
+        form = SovFilterConfigForm(request.POST, alliance_ids=_own_alliance_ids(request.user))
+        if form.is_valid():
+            form.save()
+            logger.info(f'{request.user.username}: sov filter added for {form.instance.corporation}')
+            messages.success(request, '✅ Sovereignty filter added. Run "Sync Sovereignty Now" or wait for the daily sync to populate its systems.')
+        else:
+            logger.warning(f'{request.user.username}: SovFilterConfig form invalid: {form.errors}')
+            messages.error(request, f'❌ Error: {form.errors}')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_delete_sov_filter(request, pk):
+    config = get_object_or_404(SovFilterConfig, pk=pk)
+    if request.method == 'POST':
+        corp_name = config.corporation.corporation_name
+        config.delete()
+        logger.info(f'{request.user.username}: sov filter for {corp_name} deleted')
+        messages.success(request, f'🗑️ Sovereignty filter for {corp_name} deleted.')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_sync_sov_now(request):
+    from .services import sync_sov_systems
+
+    logger.info(f'{request.user.username}: manual sovereignty sync triggered')
+    count = sync_sov_systems()
+    messages.success(request, f'✅ Sovereignty sync complete — {count} system(s) tracked.')
     return redirect('miningtax:settings')

@@ -339,6 +339,54 @@ def sync_all_characters():
     return total_synced
 
 
+# ─── SOVEREIGNTY SYNC ──────────────────────────────────────────────────────────
+
+def sync_sov_systems():
+    """
+    Refreshes the SovSystem cache from ESI's public sovereignty map
+    (/sovereignty/map/, no token needed) for every active SovFilterConfig.
+    Rebuilds the table fully each run so it always reflects current
+    sovereignty — no manual system list to maintain.
+    """
+    from .models import SovFilterConfig, SovSystem
+
+    configs = SovFilterConfig.objects.filter(active=True).select_related('corporation')
+    if not configs.exists():
+        return 0
+
+    esi = _get_esi_client()
+
+    try:
+        sov_map = esi.client.Sovereignty.GetSovereigntyMap().results()
+    except Exception as e:
+        logger.warning(f'Sovereignty map request failed: {e}')
+        return 0
+
+    target_corp_ids = {c.corporation.corporation_id for c in configs}
+    matching_systems = [s for s in sov_map if getattr(s, 'corporation_id', None) in target_corp_ids]
+
+    updated = 0
+    seen_ids = set()
+    for sys_entry in matching_systems:
+        system_id = sys_entry.system_id
+        corp_id = sys_entry.corporation_id
+        seen_ids.add(system_id)
+
+        system_name = _get_location_name_db_first(system_id, None, esi)
+
+        SovSystem.objects.update_or_create(
+            system_id=system_id,
+            defaults={'system_name': system_name, 'corporation_id': corp_id}
+        )
+        updated += 1
+
+    # Remove systems no longer held by any tracked corp
+    removed, _ = SovSystem.objects.exclude(system_id__in=seen_ids).delete()
+
+    logger.info(f'Sovereignty sync complete — {updated} system(s) tracked, {removed} stale entrie(s) removed')
+    return updated
+
+
 # ─── ESI CLIENT ────────────────────────────────────────────────────────────────
 
 _esi_client = None
@@ -352,7 +400,7 @@ def _get_esi_client():
             compatibility_date="2026-06-09",
             ua_appname="EVE Mining Manager Plugin",
             ua_version="1.0",
-            tags=['Industry', 'Universe', 'Market', 'Wallet'],
+            tags=['Industry', 'Universe', 'Market', 'Wallet', 'Alliance', 'Sovereignty'],
         )
     return _esi_client
 

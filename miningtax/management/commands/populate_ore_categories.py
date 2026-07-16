@@ -5,7 +5,7 @@ from miningtax.models import OreCategory
 # Erz-Kategorien für EVE Online Mining Tax
 # type_id: ESI type_id des Erzes
 # type_name: Name des Erzes
-# category: R4/R8/R16/R32/R64/Ice/Ore
+# category: R4/R8/R16/R32/R64/Ice/Ore/Mercoxit
 
 ORE_DATA = [
     # R4 Monde
@@ -62,7 +62,8 @@ ORE_DATA = [
     (1232, 'Crokite', 'Ore'),
     (19, 'Bistot', 'Ore'),
     (1223, 'Arkonor', 'Ore'),
-    (11396, 'Mercoxit', 'Ore'),
+    # Mercoxit — own tax category (own editable rate), not lumped in with 'Ore'
+    (11396, 'Mercoxit', 'Mercoxit'),
     # Abyssal Ore
     (46676, 'Bezdnacine', 'Ore'),
     (46678, 'Rakovene', 'Ore'),

@@ -18,12 +18,15 @@
     </div>
   </div>
 
-  {% for message in messages %}
-    <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}success{% endif %} alert-dismissible fade show" role="alert">
-      {{ message }}
-      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-  {% endfor %}
+  {# Django messages are rendered by Alliance Auth's base template
+     (base-bs5.html) already, so this template does NOT loop over messages
+     itself — doing so would display every message twice. #}
+
+  <datalist id="known-structure-names">
+    {% for structure in known_structures %}
+      <option value="{{ structure }}">
+    {% endfor %}
+  </datalist>
 
   <ul class="nav nav-tabs mb-4" id="settingsTabs" role="tablist">
     <li class="nav-item">
@@ -44,6 +47,11 @@
     <li class="nav-item">
       <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-treasury">
         <i class="fas fa-wallet"></i> {% trans "Treasury" %}
+      </button>
+    </li>
+    <li class="nav-item">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-sov">
+        <i class="fas fa-shield-alt"></i> {% trans "Sovereignty" %}
       </button>
     </li>
   </ul>
@@ -180,6 +188,10 @@
               </button>
             </div>
           </form>
+          <p class="text-muted small mt-2">
+            <i class="fas fa-info-circle"></i>
+            {% trans "Structure Name suggestions come from structures already seen in the mining ledger — start typing to see matches." %}
+          </p>
         </div>
       </div>
     </div>
@@ -194,6 +206,7 @@
               <tr>
                 <th>{% trans "Moon Name" %}</th>
                 <th>{% trans "System" %}</th>
+                <th>{% trans "Structure" %}</th>
                 <th>{% trans "Category" %}</th>
                 <th>{% trans "Type" %}</th>
                 <th>{% trans "Tax Free" %}</th>
@@ -205,6 +218,10 @@
               <tr>
                 <td class="align-middle">{{ moon.name }}</td>
                 <td class="align-middle">{{ moon.solar_system_name }}</td>
+                <td class="align-middle">
+                  {% if moon.structure_name %}<code>{{ moon.structure_name }}</code>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </td>
                 <td class="align-middle"><span class="badge bg-info text-dark">{{ moon.ore_category }}</span></td>
                 <td class="align-middle">
                   {% if moon.moon_type == 'event' %}
@@ -227,6 +244,7 @@
                           data-moon-id="{{ moon.pk }}"
                           data-moon-name="{{ moon.name }}"
                           data-moon-system="{{ moon.solar_system_name }}"
+                          data-moon-structure="{{ moon.structure_name }}"
                           data-moon-category="{{ moon.ore_category }}"
                           data-moon-type="{{ moon.moon_type }}"
                           data-moon-taxfree="{{ moon.is_tax_free|yesno:'true,false' }}">
@@ -242,7 +260,7 @@
                 </td>
               </tr>
               {% empty %}
-              <tr><td colspan="6" class="text-center text-muted py-3">{% trans "No moons configured." %}</td></tr>
+              <tr><td colspan="7" class="text-center text-muted py-3">{% trans "No moons configured." %}</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -263,11 +281,16 @@
                 <label class="form-label">{% trans "Solar System" %}</label>
                 {{ moon_form.solar_system_name }}
               </div>
+              <div class="col-md-3">
+                <label class="form-label">{% trans "Structure" %}</label>
+                {{ moon_form.structure_name }}
+                <small class="text-muted">{% trans "Exact structure name — only needed if several moon structures share one system." %}</small>
+              </div>
               <div class="col-md-2">
                 <label class="form-label">{% trans "Ore Category" %}</label>
                 {{ moon_form.ore_category }}
               </div>
-              <div class="col-md-2">
+              <div class="col-md-1">
                 <label class="form-label">{% trans "Moon Type" %}</label>
                 {{ moon_form.moon_type }}
               </div>
@@ -293,6 +316,35 @@
       <div class="alert alert-info">
         <i class="fas fa-info-circle"></i>
         {% trans "The configured corporation's wallet is checked for incoming payments. Each corp/month gets a unique payment code (corp ID/month/year) shown on the alliance overview — a payment counts as received when this exact code appears in the wallet journal reason, the amount is sufficient, and the sending corporation matches the open billing record." %}
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Corporation Not in the List?" %}</strong></div>
+        <div class="card-body">
+          <p class="text-muted small">
+            {% trans "A corporation only appears in the dropdowns once it has been registered — either automatically (a member logged in, or the corp observer sync found them) or manually here." %}
+          </p>
+
+          <label class="form-label">{% trans "Register a single corporation by ID" %}</label>
+          <form method="post" action="{% url 'miningtax:settings_register_corp' %}" class="d-flex gap-2 mb-3">
+            {% csrf_token %}
+            <input type="text" name="corporation_id" class="form-control" style="max-width:250px"
+                   placeholder="{% trans "Corporation ID" %}" required>
+            <button type="submit" class="btn btn-outline-primary">
+              <i class="fas fa-plus"></i> {% trans "Register Corporation" %}
+            </button>
+          </form>
+
+          <label class="form-label">{% trans "Or register every corporation in an alliance at once" %}</label>
+          <form method="post" action="{% url 'miningtax:settings_register_alliance_corps' %}" class="d-flex gap-2">
+            {% csrf_token %}
+            <input type="text" name="alliance_id" class="form-control" style="max-width:250px"
+                   placeholder="{% trans "Alliance ID" %}" required>
+            <button type="submit" class="btn btn-outline-primary">
+              <i class="fas fa-users"></i> {% trans "Register All Corps in This Alliance" %}
+            </button>
+          </form>
+        </div>
       </div>
 
       <div class="card mb-4">
@@ -381,6 +433,96 @@
       </div>
     </div>
 
+    {# TAB 5: SOVEREIGNTY #}
+    <div class="tab-pane fade" id="tab-sov">
+      <div class="alert alert-info">
+        <i class="fas fa-info-circle"></i>
+        {% trans "When a sovereignty filter is active, only mining reported from a system currently held (per EVE's public sovereignty data) by the selected corporation is taxed — mining anywhere else is excluded automatically. The list of held systems refreshes on its own with the daily sync (or the button below), so nothing needs to be maintained by hand." %}
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Sovereignty Filter" %}</strong></div>
+        <div class="card-body p-0">
+          <table class="table table-hover mb-0">
+            <thead class="table-dark">
+              <tr>
+                <th>{% trans "Reference Corporation" %}</th>
+                <th>{% trans "Active" %}</th>
+                <th style="width:100px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for config in sov_filter_configs %}
+              <tr>
+                <td class="align-middle">{{ config.corporation.corporation_name }}</td>
+                <td class="align-middle">
+                  {% if config.active %}
+                    <span class="badge bg-success">{% trans "Active" %}</span>
+                  {% else %}
+                    <span class="badge bg-secondary">{% trans "Inactive" %}</span>
+                  {% endif %}
+                </td>
+                <td class="align-middle">
+                  <form method="post" action="{% url 'miningtax:settings_delete_sov_filter' config.pk %}"
+                        onsubmit="return confirm('{% trans "Really delete this sovereignty filter?" %}')">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-danger">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="3" class="text-center text-muted py-3">{% trans "No sovereignty filter configured — all mining is currently taxable." %}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Add Sovereignty Filter" %}</strong></div>
+        <div class="card-body">
+          <form method="post" action="{% url 'miningtax:settings_add_sov_filter' %}">
+            {% csrf_token %}
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label">{% trans "Alliance" %}</label>
+                <select id="sov_alliance_filter" class="form-control">
+                  <option value="">{% trans "All" %}</option>
+                  {% for alliance in alliances %}
+                    <option value="{{ alliance.alliance_id }}">{{ alliance.alliance_name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">{{ sov_filter_form.corporation.label }}</label>
+                {{ sov_filter_form.corporation }}
+              </div>
+              <div class="col-md-4 d-flex align-items-end">
+                <div class="form-check mb-2">
+                  {{ sov_filter_form.active }}
+                  <label class="form-check-label">{% trans "Active" %}</label>
+                </div>
+              </div>
+            </div>
+            <div class="mt-3">
+              <button type="submit" class="btn btn-success">
+                <i class="fas fa-plus"></i> {% trans "Add" %}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <form method="post" action="{% url 'miningtax:settings_sync_sov_now' %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-primary">
+          <i class="fas fa-sync"></i> {% trans "Sync Sovereignty Now" %}
+        </button>
+      </form>
+    </div>
+
   </div>
 </div>
 
@@ -404,11 +546,23 @@
             <input type="text" name="solar_system_name" id="edit_moon_system" class="form-control">
           </div>
           <div class="mb-3">
+            <label class="form-label">{% trans "Structure" %}</label>
+            <input type="text" name="structure_name" id="edit_moon_structure" class="form-control"
+                   list="known-structure-names" placeholder="{% trans 'Exact structure name (optional)' %}">
+            <small class="text-muted">{% trans "Only needed if several moon structures share one system." %}</small>
+          </div>
+          <div class="mb-3">
             <label class="form-label">{% trans "Ore Category" %}</label>
             <select name="ore_category" id="edit_moon_category" class="form-control">
-              {% for val, label in moon_form.ore_category.field.choices %}
-                <option value="{{ val }}">{{ label }}</option>
-              {% endfor %}
+              <option value="R4">R4</option>
+              <option value="R8">R8</option>
+              <option value="R16">R16</option>
+              <option value="R32">R32</option>
+              <option value="R64">R64</option>
+              <option value="Ice">Ice</option>
+              <option value="Ore">Ore</option>
+              <option value="Mercoxit">Mercoxit</option>
+              <option value="Gas">Gas</option>
             </select>
           </div>
           <div class="mb-3">
@@ -439,10 +593,25 @@ document.getElementById('editMoonModal').addEventListener('show.bs.modal', funct
   const btn = event.relatedTarget;
   const moonId = btn.getAttribute('data-moon-id');
   document.getElementById('editMoonForm').action = `/miningtax/settings/moon/${moonId}/edit/`;
-  document.getElementById('edit_moon_name').value     = btn.getAttribute('data-moon-name');
-  document.getElementById('edit_moon_system').value   = btn.getAttribute('data-moon-system');
-  document.getElementById('edit_moon_category').value = btn.getAttribute('data-moon-category');
-  document.getElementById('edit_moon_type').value     = btn.getAttribute('data-moon-type');
+  document.getElementById('edit_moon_name').value      = btn.getAttribute('data-moon-name');
+  document.getElementById('edit_moon_system').value    = btn.getAttribute('data-moon-system');
+  document.getElementById('edit_moon_structure').value = btn.getAttribute('data-moon-structure');
+
+  // Explicitly select the matching <option> (more reliable across browsers
+  // than only setting .value, especially right after a Bootstrap modal
+  // becomes visible) instead of just assigning .value.
+  const categorySelect = document.getElementById('edit_moon_category');
+  const wantedCategory = btn.getAttribute('data-moon-category');
+  for (const opt of categorySelect.options) {
+    opt.selected = (opt.value === wantedCategory);
+  }
+
+  const typeSelect = document.getElementById('edit_moon_type');
+  const wantedType = btn.getAttribute('data-moon-type');
+  for (const opt of typeSelect.options) {
+    opt.selected = (opt.value === wantedType);
+  }
+
   document.getElementById('edit_moon_taxfree').checked = btn.getAttribute('data-moon-taxfree') === 'true';
 });
 
@@ -470,5 +639,6 @@ function wireAllianceFilter(allianceSelectId, corpSelectId) {
 
 wireAllianceFilter('rental_alliance_filter', 'id_corporation');
 wireAllianceFilter('treasury_alliance_filter', 'id_treasury_corporation');
+wireAllianceFilter('sov_alliance_filter', 'id_sov_corporation');
 </script>
 {% endblock %}
