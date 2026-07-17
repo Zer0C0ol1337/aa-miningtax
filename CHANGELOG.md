@@ -1,6 +1,26 @@
 # Changelog
 
 
+## [0.8.1] - 2026-07-17
+
+Bugfix release: correct ore type IDs, names, and tax categories.
+
+### Fixed
+- **Ore tax categories and type IDs were systematically wrong.** The previous hand-maintained `populate_ore_categories` list contained many incorrect type IDs — base ores were swapped (e.g. Veldspar/Scordite), moon ores were on the wrong R-tier (e.g. Loparite as R32 instead of R64, Cobaltite as R4 instead of R8), and several IDs pointed at ship SKINs or blueprints entirely. Because tax category is resolved by type ID, this could mis-tax affected ore. `populate_ore_categories` now derives categories directly from eveuniverse asteroid groups (authoritative IDs straight from ESI), covering every base ore, II/III/IV-Grade, Bountiful/Shining moon-ore tier, and Compressed ice variant automatically — so it can never drift out of sync again
+- **Wrong ore names were baked into ledger entries.** Ledger sync took the ore name from the (previously mis-seeded) `OreCategory` table first, so entries were stored with wrong names (and some as `Type NNNN` placeholders). `_get_type_name_db_first` now prefers eveuniverse, the authoritative source, so future syncs store correct names
+- Added a one-off `fix_ledger_names` management command to repair existing ledger entries' names from eveuniverse (loading any missing ore types from ESI on the fly). Names only — tax categories resolve by type ID and were corrected by the new `populate_ore_categories`
+
+### Changed
+- `populate_ore_categories` now **requires django-eveuniverse** with asteroid types loaded (`eveuniverse_load_types miningtax --category_id 25`). This makes ore data authoritative instead of hand-maintained
+
+### Upgrade steps
+On an existing install, after updating:
+1. `python manage.py eveuniverse_load_types miningtax --category_id 25` (if not already loaded)
+2. `python manage.py fix_ledger_names` (repair stored names; use `--dry-run` first to preview)
+3. `python manage.py populate_ore_categories` (rebuild categories from eveuniverse)
+4. Recompute prices: reset `price_per_unit`/`total_value` to 0 and run `update_market_prices()`, or wait for the daily sync
+
+
 ## [0.8.0] - 2026-07-17
 
 Major release: refined-value pricing, sovereignty-based taxation, a dedicated

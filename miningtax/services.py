@@ -406,7 +406,22 @@ def _get_esi_client():
 
 
 def _get_type_name_db_first(type_id, esi):
-    """Ore type name: check DB first, then ESI."""
+    """Ore type name, cheapest reliable source first.
+
+    eveuniverse (when installed) is authoritative — its names come straight from
+    ESI — so it's checked before the local OreCategory table. This matters
+    because a stale or mis-seeded OreCategory row would otherwise bake a wrong
+    name into every synced ledger entry. Order: eveuniverse → OreCategory →
+    existing ledger rows → live ESI.
+    """
+    try:
+        from eveuniverse.models import EveType
+        et = EveType.objects.filter(id=type_id).first()
+        if et and et.name:
+            return et.name
+    except ImportError:
+        pass
+
     try:
         return OreCategory.objects.get(type_id=type_id).type_name
     except OreCategory.DoesNotExist:

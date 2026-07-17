@@ -31,7 +31,7 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 | `allianceauth` | Yes | Core framework |
 | `django-esi` | Yes | ESI access (fallback sync + market prices + wallet journal) |
 | `reportlab` | Yes | PDF export |
-| `django-eveuniverse` | Optional | Required only for **refined-value pricing** — supplies reprocessing recipes (`EveTypeMaterial`). Not needed if you price by ESI reference price |
+| `django-eveuniverse` | Yes | Authoritative ore type IDs/names/categories (`populate_ore_categories`) and reprocessing recipes for refined-value pricing. Load asteroid types with `eveuniverse_load_types miningtax --category_id 25` |
 | `allianceauth-corptools` | Recommended | Mining data from DB instead of ESI — significantly fewer API calls; required for the automatic payment check (corp wallet scope) |
 
 Without Corptools the plugin falls back to its own ESI sync for mining data. The **automatic payment verification** feature specifically requires a director/accountant character of the treasury corp logged in via Corptools' Corporation Audit flow with the `esi-wallet.read_corporation_wallets.v1` scope — Character Audit alone does not grant this scope.
@@ -54,18 +54,9 @@ INSTALLED_APPS += [
 ]
 ```
 
-### 3. Run migrations
+### 3. Install eveuniverse and run migrations
 
-```bash
-python manage.py migrate miningtax
-python manage.py populate_ore_categories
-python manage.py collectstatic --noinput
-```
-
-### 3b. (Optional) Enable refined-value pricing
-
-Skip this if you want to price ore by ESI reference price. To value ore by its
-reprocessed mineral value instead:
+`populate_ore_categories` derives ore data from eveuniverse, so install and load it first:
 
 ```bash
 pip install django-eveuniverse
@@ -80,14 +71,25 @@ INSTALLED_APPS += [
 EVEUNIVERSE_LOAD_TYPE_MATERIALS = True
 ```
 
-Then migrate and load reprocessing recipes:
+Then migrate, load asteroid types, and populate categories:
 
 ```bash
 python manage.py migrate
+python manage.py eveuniverse_load_types miningtax --category_id 25
+python manage.py populate_ore_categories
+python manage.py collectstatic --noinput
+```
+
+### 3b. (Optional) Enable refined-value pricing
+
+To value ore by its reprocessed mineral value instead of the ESI reference price,
+load reprocessing recipes:
+
+```bash
 python manage.py populate_ore_reprocessing
 ```
 
-Finally, in **Settings → Pricing**, tick "Enable Janice pricing" and enter a
+Then, in **Settings → Pricing**, tick "Enable Janice pricing" and enter a
 Janice API key (request one via the Janice Discord). The key is stored
 server-side and never shown to members. Reprocessing efficiency uses Janice
 defaults (Ore 0.9063, Gas 0.95), and only whole reprocessing portions are taxed
