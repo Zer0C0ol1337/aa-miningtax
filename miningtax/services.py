@@ -456,28 +456,63 @@ def _get_location_name_db_first(location_id, token, esi):
     return name
 
 
-# ─── MARKET PRICES (bulk endpoint) ────────────────────────────────────────────
+# ─── MARKET PRICES ────────────────────────────────────────────────────────────
+
+# Reprocessing efficiency factors (Janice defaults). Applied to the raw
+# reprocessing yields to get the actual materials received. Ore/moon ore use
+# the ore factor; gas clouds use the gas factor.
+REPROCESS_EFF_ORE = 0.9063
+REPROCESS_EFF_GAS = 0.9500
+
 
 def update_market_prices():
     """
-    Updates prices for all entries without a price.
-    Uses a single ESI bulk call for all prices.
+    Updates prices for all mining ledger entries that don't have a price yet.
+
+    Pricing strategy (best value first, always with a safe fallback):
+      1. Refined value via Janice — the ore's reprocessed minerals valued at
+         Janice's Jita split price. Preferred because raw ore market prices are
+         thin and easy to manipulate, especially for moon ore (R32/R64), where
+         the mineral value is far above the raw ore price.
+      2. Janice raw split price of the item itself — for anything that can't be
+         reprocessed (e.g. gas) but that Janice still prices.
+      3. ESI adjusted_price — CCP's smoothed reference price, used whenever
+         Janice is disabled, unreachable, or doesn't know the item.
+
+    For refined ores the taxable quantity is rounded DOWN to whole reprocessing
+    portions: ore only yields minerals in full batches (e.g. 100 units), so a
+    non-divisible remainder can't actually be reprocessed. Taxing that remainder
+    would rely on the thin, manipulable raw ore price — exactly what refined
+    value avoids — so the remainder is left untaxed.
     """
     entries = MiningLedgerEntry.objects.filter(price_per_unit=0)
     if not entries.exists():
         return 0
 
-    bulk_prices = _fetch_bulk_prices()
-    if not bulk_prices:
+    type_ids = set(entries.values_list('type_id', flat=True))
+
+    # Per-unit price for each ore type, resolved once for the whole batch.
+    price_map = _build_price_map(type_ids)
+    if not price_map:
         return 0
+
+    # Portion sizes + which types are priced by refined value (recipe present).
+    portion_map, refined_type_ids = _portion_info(type_ids)
 
     updated = 0
     for entry in entries:
-        price = bulk_prices.get(entry.type_id, 0)
+        price = price_map.get(entry.type_id, 0)
         if price <= 0:
             continue
+
+        billable_qty = entry.quantity
+        # For refined ores, only whole reprocessing portions are billable.
+        if entry.type_id in refined_type_ids:
+            portion = portion_map.get(entry.type_id, 1) or 1
+            billable_qty = (entry.quantity // portion) * portion
+
         entry.price_per_unit = price
-        entry.total_value = price * entry.quantity
+        entry.total_value = price * billable_qty
         entry.save(update_fields=['price_per_unit', 'total_value'])
         updated += 1
 
@@ -487,11 +522,212 @@ def update_market_prices():
     return updated
 
 
+def _portion_info(type_ids):
+    """
+    Returns (portion_map, refined_type_ids):
+      - portion_map: {type_id: portion_size} for ore types that have a
+        reprocessing recipe.
+      - refined_type_ids: the set of type_ids that are priced by refined value
+        (i.e. have a recipe), so callers know for which ores the whole-portion
+        rounding applies.
+    """
+    recipes = _get_reprocessing_recipes(type_ids)
+    portion_map = {tid: r['portion_size'] for tid, r in recipes.items()}
+    return portion_map, set(recipes.keys())
+
+
+def _build_price_map(type_ids):
+    """
+    Resolves a per-unit price for each ore type_id using the strategy described
+    in update_market_prices(). Returns {type_id: price_per_unit}.
+    """
+    from .models import JaniceConfig
+
+    esi_prices = _fetch_bulk_prices()  # always fetched as the universal fallback
+    config = JaniceConfig.get_solo()
+
+    # If Janice is disabled or unconfigured, everything falls back to ESI.
+    if not config.enabled or not config.api_key:
+        return {tid: esi_prices.get(tid, 0) for tid in type_ids}
+
+    # Reprocessing recipes from eveuniverse (may be unavailable if not installed).
+    recipes = _get_reprocessing_recipes(type_ids)
+
+    # Fetch mineral/material prices SEPARATELY from raw ore prices. Requesting an
+    # ore together with its own minerals in one Janice call can cause the ore to
+    # crowd out the mineral entries in the response, which would collapse refined
+    # value to the raw fallback. Two clean calls avoid that entirely.
+    material_ids = set()
+    for recipe in recipes.values():
+        material_ids.update(int(m) for m in recipe['materials'].keys())
+
+    ore_ids = {int(t) for t in type_ids}
+
+    mineral_prices = _fetch_janice_split_prices(material_ids, config.api_key)
+    raw_ore_prices = _fetch_janice_split_prices(ore_ids - material_ids, config.api_key)
+
+    # Combined lookup: minerals win over ore for any overlapping id (an id that is
+    # both a mined ore and a reprocessing output — rare, but minerals are what the
+    # refined calc needs).
+    janice_prices = {**raw_ore_prices, **mineral_prices}
+
+    price_map = {}
+    for tid in type_ids:
+        price = 0.0
+        recipe = recipes.get(tid)
+
+        if recipe:
+            # Refined value: sum(material qty × efficiency × janice split price)
+            # divided by the ore's portion size to get per-unit value.
+            portion = recipe['portion_size'] or 1
+            eff = REPROCESS_EFF_GAS if _is_gas(tid) else REPROCESS_EFF_ORE
+            refined = 0.0
+            complete = True
+            for mat_id, qty in recipe['materials'].items():
+                mp = janice_prices.get(int(mat_id))
+                if mp is None or mp <= 0:
+                    complete = False
+                    break
+                refined += qty * eff * mp
+            if complete and refined > 0:
+                price = refined / portion
+            else:
+                # Recipe exists but a mineral price was missing. Do NOT fall back
+                # to the raw ore price here — for moon ore the raw market price is
+                # thin and often manipulated (the very reason we use refined value).
+                # Use ESI's smoothed adjusted_price instead, which is safe.
+                price = esi_prices.get(tid, 0)
+        else:
+            # No reprocessing recipe (e.g. gas): raw Janice split, then ESI.
+            jp = janice_prices.get(int(tid))
+            if jp and jp > 0:
+                price = jp
+            else:
+                price = esi_prices.get(tid, 0)
+
+        price_map[tid] = price
+
+    return price_map
+
+
+def _is_gas(type_id):
+    """True if the ore type is categorised as Gas (uses gas reprocess efficiency)."""
+    try:
+        return OreCategory.objects.get(type_id=type_id).category == 'Gas'
+    except OreCategory.DoesNotExist:
+        return False
+
+
+def _get_reprocessing_recipes(type_ids):
+    """
+    Returns reprocessing recipes for the given ore type_ids from eveuniverse:
+        {type_id: {'portion_size': int, 'materials': {material_type_id: qty}}}
+
+    Only ore types that actually have material data are included. If eveuniverse
+    isn't installed the result is empty and callers fall back to raw prices.
+    """
+    try:
+        from eveuniverse.models import EveType, EveTypeMaterial
+    except ImportError:
+        logger.debug('eveuniverse not installed — refined value unavailable, using raw prices')
+        return {}
+
+    recipes = {}
+    materials = EveTypeMaterial.objects.filter(
+        eve_type_id__in=type_ids
+    ).values('eve_type_id', 'material_eve_type_id', 'quantity')
+
+    portion_sizes = dict(
+        EveType.objects.filter(id__in=type_ids).values_list('id', 'portion_size')
+    )
+
+    for m in materials:
+        tid = m['eve_type_id']
+        if tid not in recipes:
+            recipes[tid] = {
+                'portion_size': portion_sizes.get(tid, 1),
+                'materials': {},
+            }
+        recipes[tid]['materials'][m['material_eve_type_id']] = m['quantity']
+
+    return recipes
+
+
+def _fetch_janice_split_prices(type_ids, api_key):
+    """
+    Fetches the Jita split price for the given type_ids from Janice's v2 pricer
+    endpoint. Returns {type_id: split_price}.
+
+    The request is split into chunks: Janice can silently drop items from very
+    large batches, and a missing mineral price would wrongly collapse an ore's
+    refined value back to its (often manipulated) raw price. Chunking keeps
+    every requested price present.
+
+    On any error for a chunk that chunk is skipped (its ores then fall back to
+    ESI) — Janice being unreachable must never block billing.
+    """
+    if not type_ids:
+        return {}
+
+    ids = list(type_ids)
+    chunk_size = 100
+    prices = {}
+    for start in range(0, len(ids), chunk_size):
+        chunk = ids[start:start + chunk_size]
+        prices.update(_fetch_janice_chunk(chunk, api_key))
+    return prices
+
+
+def _fetch_janice_chunk(type_ids, api_key):
+    """Single Janice pricer call for up to ~100 type_ids."""
+    import urllib.request
+    import urllib.error
+    import json
+
+    url = 'https://janice.e-351.com/api/rest/v2/pricer?market=2'
+    body = '\n'.join(str(tid) for tid in type_ids).encode('utf-8')
+    req = urllib.request.Request(url, data=body, method='POST')
+    req.add_header('X-ApiKey', api_key)
+    req.add_header('Content-Type', 'text/plain')
+    req.add_header('accept', 'application/json')
+    # Janice sits behind Cloudflare, which blocks requests with a default
+    # urllib user-agent (Error 1010). A normal UA string gets through.
+    req.add_header('User-Agent', 'aa-miningtax/1.0 (Alliance Auth Mining Tax plugin)')
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+        logger.warning(f'Janice price request failed ({e}) — those ores fall back to ESI prices')
+        return {}
+
+    prices = {}
+    for item in data:
+        try:
+            eid = item['itemType']['eid']
+            split = item['immediatePrices']['splitPrice']
+            if eid is not None and split:
+                prices[int(eid)] = float(split)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return prices
+
+
 def _fetch_bulk_prices():
-    """Single ESI call for all EVE market prices via /markets/prices/."""
+    """Single ESI call for all EVE market prices via /markets/prices/.
+
+    The ESI client caches responses with an ETag; when it has a stored ETag,
+    ESI replies 304 Not Modified and the client hands back an empty result set
+    instead of the cached body — which would leave billing without any prices.
+    We disable ETag/cache handling on this call so a full price list is always
+    returned. This endpoint is a single lightweight bulk request, so skipping
+    the cache is cheap.
+    """
     try:
         esi = _get_esi_client()
-        results = esi.client.Market.GetMarketsPrices().results()
+        results = esi.client.Market.GetMarketsPrices().results(
+            use_etag=False, use_cache=False
+        )
         return {
             item.type_id: float(item.adjusted_price or item.average_price or 0)
             for item in results

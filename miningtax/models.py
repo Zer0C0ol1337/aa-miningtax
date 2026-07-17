@@ -197,3 +197,33 @@ class SovSystem(models.Model):
 
     def __str__(self):
         return f"{self.system_name} ({self.corporation_id})"
+
+
+# Singleton config for the Janice pricing integration. When enabled and an API
+# key is set, ore is valued by its reprocessed mineral value (Janice Jita split
+# price) instead of the raw ESI adjusted_price — far harder to manipulate,
+# especially for moon ore where the raw ore price sits well below mineral value.
+# Falls back to ESI automatically when disabled or when Janice is unreachable.
+class JaniceConfig(models.Model):
+    enabled = models.BooleanField(
+        default=False,
+        help_text='Use Janice refined value for ore pricing. When off, ESI adjusted_price is used.'
+    )
+    api_key = models.CharField(
+        max_length=255, blank=True,
+        help_text='Janice API key (request one via their Discord). Stored server-side, never shown to members.'
+    )
+
+    class Meta:
+        default_permissions = ()
+        verbose_name = 'Janice configuration'
+
+    def __str__(self):
+        return f"Janice ({'enabled' if self.enabled else 'disabled'})"
+
+    @classmethod
+    def get_solo(cls):
+        # Always returns the single config row, creating it on first access so
+        # callers never have to handle DoesNotExist.
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj

@@ -54,6 +54,11 @@
         <i class="fas fa-shield-alt"></i> {% trans "Sovereignty" %}
       </button>
     </li>
+    <li class="nav-item">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-pricing">
+        <i class="fas fa-coins"></i> {% trans "Pricing" %}
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content">
@@ -521,6 +526,49 @@
           <i class="fas fa-sync"></i> {% trans "Sync Sovereignty Now" %}
         </button>
       </form>
+    </div>
+
+    {# TAB 6: PRICING (Janice refined value) #}
+    <div class="tab-pane fade" id="tab-pricing">
+      <div class="alert alert-info">
+        <i class="fas fa-info-circle"></i>
+        {% trans "When Janice pricing is enabled, mined ore is valued by its reprocessed mineral value (Janice Jita split price) instead of the raw ore market price. This is far harder to manipulate — especially for moon ore (R32/R64), where the raw ore price sits well below the mineral value. If Janice is disabled, has no key, or is unreachable, the plugin automatically falls back to CCP's ESI reference price, so billing is never blocked." %}
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Janice Refined Value Pricing" %}</strong></div>
+        <div class="card-body">
+          <form method="post" action="{% url 'miningtax:settings_save_janice' %}">
+            {% csrf_token %}
+            <div class="row g-3 align-items-end">
+              <div class="col-md-3">
+                <div class="form-check mt-4">
+                  {{ janice_form.enabled }}
+                  <label class="form-check-label">{% trans "Enable Janice pricing" %}</label>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">{% trans "Janice API Key" %}</label>
+                {{ janice_form.api_key }}
+                <small class="text-muted">{% trans "Request a key via the Janice Discord. The sample key works for testing but can be blocked without notice." %}</small>
+              </div>
+              <div class="col-md-3">
+                <button type="submit" class="btn btn-success">
+                  <i class="fas fa-save"></i> {% trans "Save" %}
+                </button>
+              </div>
+            </div>
+          </form>
+          <div class="mt-3 text-muted small">
+            <i class="fas fa-lock"></i>
+            {% trans "The API key is stored server-side and never shown to members. Reprocessing efficiency uses Janice defaults (Ore 0.9063 / Gas 0.95)." %}
+          </div>
+          <div class="mt-2 text-muted small">
+            <i class="fas fa-terminal"></i>
+            {% trans "After enabling, run 'python manage.py populate_ore_reprocessing' once to load reprocessing recipes (requires django-eveuniverse with type materials)." %}
+          </div>
+        </div>
+      </div>
     </div>
 
   </div>

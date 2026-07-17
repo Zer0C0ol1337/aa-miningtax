@@ -1,5 +1,5 @@
 from django import forms
-from .models import TaxRate, MoonRental, AllianceMoon, TreasuryConfig, SovFilterConfig
+from .models import TaxRate, MoonRental, AllianceMoon, TreasuryConfig, SovFilterConfig, JaniceConfig
 from allianceauth.eveonline.models import EveCorporationInfo
 
 
@@ -87,7 +87,8 @@ class AllianceMoonForm(forms.ModelForm):
             }),
             'ore_category': forms.Select(attrs={'class': 'form-control'}, choices=[
                 ('R4', 'R4'), ('R8', 'R8'), ('R16', 'R16'),
-                ('R32', 'R32'), ('R64', 'R64'), ('Ice', 'Ice'), ('Ore', 'Ore'), ('Gas', 'Gas'),
+                ('R32', 'R32'), ('R64', 'R64'), ('Ice', 'Ice'), ('Ore', 'Ore'),
+                ('Mercoxit', 'Mercoxit'), ('Gas', 'Gas'),
             ]),
             'moon_type': forms.Select(attrs={'class': 'form-control'}),
             'is_tax_free': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
@@ -125,3 +126,18 @@ class SovFilterConfigForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['corporation'].queryset = _corps_for_alliances(alliance_ids)
         self.fields['corporation'].label = 'Sovereignty Reference Corp'
+
+
+# Config for the Janice refined-value pricing integration.
+class JaniceConfigForm(forms.ModelForm):
+    class Meta:
+        model = JaniceConfig
+        fields = ['enabled', 'api_key']
+        widgets = {
+            'enabled': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'api_key': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'Janice API key',
+                'autocomplete': 'off',
+            }),
+        }

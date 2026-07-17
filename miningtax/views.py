@@ -11,11 +11,14 @@ from decimal import Decimal
 
 from .models import (
     MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord,
-    TreasuryConfig, SovFilterConfig,
+    TreasuryConfig, SovFilterConfig, JaniceConfig,
 )
 from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
 from .services import sync_character_mining, update_market_prices, sync_all_corp_observers
-from .forms import TaxRateForm, MoonRentalForm, AllianceMoonForm, TreasuryConfigForm, SovFilterConfigForm
+from .forms import (
+    TaxRateForm, MoonRentalForm, AllianceMoonForm, TreasuryConfigForm,
+    SovFilterConfigForm, JaniceConfigForm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +393,7 @@ def settings_view(request):
     alliance_moons = AllianceMoon.objects.all().order_by('solar_system_name', 'name')
     treasury_configs = TreasuryConfig.objects.select_related('corporation').all()
     sov_filter_configs = SovFilterConfig.objects.select_related('corporation').all()
+    janice_config = JaniceConfig.get_solo()
 
     from allianceauth.eveonline.models import EveAllianceInfo
     alliance_ids = _own_alliance_ids(request.user)
@@ -422,6 +426,8 @@ def settings_view(request):
         'moon_form': AllianceMoonForm(),
         'treasury_form': TreasuryConfigForm(alliance_ids=alliance_ids),
         'sov_filter_form': SovFilterConfigForm(alliance_ids=alliance_ids),
+        'janice_config': janice_config,
+        'janice_form': JaniceConfigForm(instance=janice_config),
     }
     return render(request, 'miningtax/settings.html', context)
 
@@ -641,4 +647,19 @@ def settings_sync_sov_now(request):
     logger.info(f'{request.user.username}: manual sovereignty sync triggered')
     count = sync_sov_systems()
     messages.success(request, f'✅ Sovereignty sync complete — {count} system(s) tracked.')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_save_janice(request):
+    if request.method == 'POST':
+        config = JaniceConfig.get_solo()
+        form = JaniceConfigForm(request.POST, instance=config)
+        if form.is_valid():
+            form.save()
+            logger.info(f'{request.user.username}: Janice config saved (enabled={form.instance.enabled})')
+            messages.success(request, '✅ Janice configuration saved.')
+        else:
+            logger.warning(f'{request.user.username}: JaniceConfig form invalid: {form.errors}')
+            messages.error(request, f'❌ Error: {form.errors}')
     return redirect('miningtax:settings')
