@@ -688,5 +688,48 @@ function wireAllianceFilter(allianceSelectId, corpSelectId) {
 wireAllianceFilter('rental_alliance_filter', 'id_corporation');
 wireAllianceFilter('treasury_alliance_filter', 'id_treasury_corporation');
 wireAllianceFilter('sov_alliance_filter', 'id_sov_corporation');
+
+// --- Remember the active settings tab across reloads ---------------------
+// Every settings action (add/delete/save) POSTs and redirects back to this
+// page, which would otherwise always land on the first tab. We remember the
+// last-opened tab in sessionStorage and restore it on load, so the officer
+// stays on the tab they were working in. sessionStorage (not localStorage)
+// is deliberate: it survives the redirect but clears when the tab is closed,
+// so it never becomes a sticky preference.
+(function () {
+  const STORAGE_KEY = 'miningtax:activeSettingsTab';
+
+  function saveActiveTab(e) {
+    const target = e.target.getAttribute('data-bs-target');
+    if (target) {
+      try { sessionStorage.setItem(STORAGE_KEY, target); } catch (err) {}
+    }
+  }
+
+  function restoreActiveTab() {
+    let saved = null;
+    try { saved = sessionStorage.getItem(STORAGE_KEY); } catch (err) {}
+    if (!saved) return;
+    const btn = document.querySelector('#settingsTabs button[data-bs-target="' + saved + '"]');
+    // Simulate a click on the tab button — this works regardless of how
+    // Bootstrap is exposed on the page (the data-bs-toggle="tab" attribute
+    // handles the switch), so it doesn't depend on the bootstrap.Tab API.
+    if (btn && !btn.classList.contains('active')) {
+      btn.click();
+    }
+  }
+
+  // Attach save listeners to every tab button.
+  document.querySelectorAll('#settingsTabs button[data-bs-toggle="tab"]')
+    .forEach(function (btn) { btn.addEventListener('shown.bs.tab', saveActiveTab); });
+
+  // Restore once the DOM (and Bootstrap's tab handlers) are ready.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', restoreActiveTab);
+  } else {
+    restoreActiveTab();
+  }
+})();
+
 </script>
 {% endblock %}

@@ -716,23 +716,59 @@ def _fetch_janice_chunk(type_ids, api_key):
 def _fetch_bulk_prices():
     """Single ESI call for all EVE market prices via /markets/prices/.
 
-    The ESI client caches responses with an ETag; when it has a stored ETag,
-    ESI replies 304 Not Modified and the client hands back an empty result set
-    instead of the cached body — which would leave billing without any prices.
-    We disable ETag/cache handling on this call so a full price list is always
-    returned. This endpoint is a single lightweight bulk request, so skipping
-    the cache is cheap.
+    ETags are respected: the ESI client sends the stored ETag, and when ESI
+    replies 304 Not Modified it raises HTTPNotModified rather than returning
+    data. Prices only change a few times a day, so on a 304 we serve the last
+    successful price list from the Django cache (Redis) — no wasted transfer,
+    no empty result. The full list is only re-parsed when ESI actually reports
+    a change.
     """
+    from django.core.cache import cache
+
+    CACHE_KEY = 'miningtax:bulk_prices'
+    CACHE_TTL = 60 * 60 * 6  # 6h; refreshed whenever ESI reports a change
+
+    try:
+        from esi.exceptions import HTTPNotModified
+    except ImportError:
+        HTTPNotModified = None
+
     try:
         esi = _get_esi_client()
-        results = esi.client.Market.GetMarketsPrices().results(
-            use_etag=False, use_cache=False
-        )
-        return {
+        results = esi.client.Market.GetMarketsPrices().results()
+        prices = {
             item.type_id: float(item.adjusted_price or item.average_price or 0)
             for item in results
             if item.type_id is not None
         }
+        # Store the fresh list so a later 304 can be served from cache.
+        cache.set(CACHE_KEY, prices, CACHE_TTL)
+        return prices
+
     except Exception as e:
+        # 304 Not Modified: nothing changed → reuse the cached price list.
+        if HTTPNotModified is not None and isinstance(e, HTTPNotModified):
+            cached = cache.get(CACHE_KEY)
+            if cached:
+                logger.debug('Market prices not modified (304) — using cached price list')
+                return cached
+            # No cache yet (e.g. first run after a restart). Fetch once while
+            # ignoring the stored ETag so we get a full list to cache.
+            logger.debug('Market prices 304 but cache empty — fetching fresh once')
+            try:
+                results = esi.client.Market.GetMarketsPrices().results(
+                    use_etag=False, use_cache=False
+                )
+                prices = {
+                    item.type_id: float(item.adjusted_price or item.average_price or 0)
+                    for item in results
+                    if item.type_id is not None
+                }
+                cache.set(CACHE_KEY, prices, CACHE_TTL)
+                return prices
+            except Exception as e2:
+                logger.warning(f'Market price refresh after 304 failed: {e2}')
+                return {}
+
         logger.debug(f'Market prices not updated: {e}')
         return {}

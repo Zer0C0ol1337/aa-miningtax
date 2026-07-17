@@ -1,6 +1,41 @@
 # Changelog
 
 
+## [0.8.0] - 2026-07-17
+
+Major release: refined-value pricing, sovereignty-based taxation, a dedicated
+Mercoxit category, and structure-level tax-free moons.
+
+### Added
+- **Refined-value pricing (Janice + eveuniverse).** Ore can now be valued by the market value of the minerals it reprocesses into, rather than the raw ore price. Raw moon-ore prices (R32/R64) are thin and easily manipulated, whereas the mineral value is both higher and more stable. Mineral prices are pulled live from the Janice API (Jita 4-4 split price) and reprocessing recipes come from `django-eveuniverse`. Pricing uses a safe fallback chain — refined value first, then the item's raw Janice split price (for things without a recipe, e.g. gas), then ESI `adjusted_price` — so billing is never blocked if Janice is disabled or unreachable
+- **Whole-portion billing for refined ore.** Ore only reprocesses in full batches (e.g. 100 units), so any remainder that doesn't fill a complete portion is left untaxed instead of being valued at the thin, manipulable raw price
+- **Pricing** tab in Settings to enable Janice and store the API key (kept server-side, never shown to members)
+- New `JaniceConfig` model, `JaniceConfigForm`, and the `settings_save_janice` view/URL (migration `0012_janiceconfig`)
+- New `populate_ore_reprocessing` management command that loads reprocessing recipes synchronously (no Celery worker required)
+- **Sovereignty tax filter.** New `SovFilterConfig` taxes only mining that happens inside a corporation's *current* sovereignty systems. The system list refreshes automatically from ESI's public sovereignty map (no manual list to maintain), backed by the new `SovSystem` cache and a "Sync Sovereignty Now" button in Settings (migration `0010_sovsystem_and_more`)
+- **Mercoxit as its own tax category**, so it can carry a rate separate from generic "Ore". Appears in the Tax-Rates tab and in billing/PDF exports automatically
+- **Structure-level tax-free moons.** `AllianceMoon` gained a `structure_name` field (migration `0011_alliancemoon_structure_name`), so a moon can be marked tax-free for a specific structure even when several structures share the same solar system; the field autocompletes from structure names already seen in the ledger
+
+### Fixed
+- **Mercoxit (and other belt/anomaly ore) was wrongly treated as tax-free.** The alliance-moon exclusion now only excludes structure-sourced entries (solar system ID above the structure threshold), so belt, anomaly, and Mercoxit mining is taxed correctly
+- **Corporation dropdowns showed the wrong alliance.** The corp select now uses the real EVE alliance ID instead of Alliance Auth's internal primary key
+- **Duplicate sovereignty notification** in Settings removed — the message is rendered once by the Alliance Auth base template instead of twice
+
+### Changed
+- **ESI market prices are now cached with ETag-aware fallback.** The `/markets/prices/` bulk call keeps respecting ESI ETags (consistent with 0.4.5 and the rest of the sync code): the stored ETag is sent, and a `304 Not Modified` is handled by serving the last successful price list from the Django cache (Redis) instead of raising or returning an empty list. The price list is refreshed only when ESI actually reports a change. This fixes ore being left unpriced when ESI returned 304, without disabling ETags
+
+### Deployment notes
+Refined-value pricing requires `django-eveuniverse`:
+1. `pip install django-eveuniverse`
+2. Add `eveuniverse` to `INSTALLED_APPS` and set `EVEUNIVERSE_LOAD_TYPE_MATERIALS = True` in `local.py`
+3. `python manage.py migrate`
+4. `python manage.py populate_ore_categories` (applies the Mercoxit category)
+5. `python manage.py populate_ore_reprocessing` (loads reprocessing recipes)
+6. In Settings → Pricing, enable Janice and enter an API key
+
+If Janice is left disabled, the plugin falls back to ESI reference prices and behaves as before.
+
+
 ## [0.7.6] - 2026-07-14
 
 ### Added
