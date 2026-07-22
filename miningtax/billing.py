@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -5,7 +6,7 @@ from django.utils import timezone
 
 from .models import (
     OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental,
-    AllianceBillingRecord, TaxExemption,
+    AllianceBillingRecord, TaxExemption, OreCategoryRule,
 )
 from .services import STRUCTURE_ID_THRESHOLD
 
@@ -15,14 +16,121 @@ from .services import STRUCTURE_ID_THRESHOLD
 # one). Once a "Default" row exists, get_tax_rate() falls back to it and
 # it's fully editable by officers in the Settings UI — no code change
 # needed to adjust the rate for unrecognized ore categories.
+logger = logging.getLogger(__name__)
+
 DEFAULT_TAX_RATE = Decimal('10.00')
 
 
+def category_from_rules(type_name='', group_name=''):
+    """
+    First pass of classification: alliance-defined name rules.
+
+    These exist because EVE's grouping doesn't always match how ore should be
+    taxed — abyssal ore and Prismaticite sit in ordinary asteroid groups but
+    warrant their own rate. Rules are checked before the group is consulted, so
+    they override the automatic result, and they apply to ore that doesn't exist
+    yet as long as its name matches.
+    """
+    haystacks = {
+        'type_name': (type_name or '').lower(),
+        'group_name': (group_name or '').lower(),
+    }
+    for rule in OreCategoryRule.objects.filter(active=True):
+        needle = (rule.contains or '').strip().lower()
+        if not needle:
+            continue
+        if needle in haystacks.get(rule.match_field, ''):
+            return rule.category
+    return None
+
+
+def classify_group_name(group_name):
+    """
+    Maps an EVE market group name to one of our tax categories.
+
+    Kept separate so both the on-demand lookup and the full ore-table import use
+    exactly the same rules — two implementations would inevitably drift apart.
+
+    Order matters: "Uncommon Moon Asteroids" contains "Common Moon", and a naive
+    substring test would misfile R16 as R8, so the most specific match wins.
+    """
+    group = (group_name or '').lower()
+    if 'exceptional moon' in group:
+        return 'R64'
+    if 'rare moon' in group:
+        return 'R32'
+    if 'uncommon moon' in group:
+        return 'R16'
+    if 'common moon' in group:
+        return 'R8'
+    if 'ubiquitous moon' in group:
+        return 'R4'
+    if 'mercoxit' in group:
+        return 'Mercoxit'
+    if 'ice' in group:
+        return 'Ice'
+    if 'cloud' in group or 'gas' in group:
+        return 'Gas'
+    if 'asteroid' in group or 'ore' in group:
+        return 'Ore'
+    return None
+
+
+def _category_from_eveuniverse(type_id):
+    """
+    Derives an ore category from the type's group in eveuniverse, e.g.
+    "Exceptional Moon Asteroids" -> R64, "Harvestable Cloud" -> Gas.
+
+    This is what keeps newly introduced or simply unseeded ore from silently
+    falling through to the Default rate: the group is authoritative SDE data,
+    so nothing has to be maintained by hand. Returns None when eveuniverse
+    isn't installed or doesn't know the type.
+    """
+    try:
+        from eveuniverse.models import EveType
+    except ImportError:
+        return None
+
+    eve_type = EveType.objects.filter(id=type_id).select_related('eve_group').first()
+    if not eve_type or not eve_type.eve_group:
+        return None
+
+    return classify_group_name(eve_type.eve_group.name)
+
+
 def get_ore_category(type_id):
+    """
+    Category for an ore type. The OreCategory table wins, so anything an officer
+    corrected by hand stays corrected; unknown types are classified from
+    eveuniverse and written back, which both fixes the current calculation and
+    makes the result visible and editable in the admin afterwards.
+    """
     try:
         return OreCategory.objects.get(type_id=type_id).category
     except OreCategory.DoesNotExist:
+        pass
+
+    name = ''
+    group_name = ''
+    try:
+        from eveuniverse.models import EveType
+        eve_type = EveType.objects.filter(id=type_id).select_related('eve_group').first()
+        if eve_type:
+            name = eve_type.name or ''
+            group_name = eve_type.eve_group.name if eve_type.eve_group else ''
+    except ImportError:
+        pass
+
+    derived = category_from_rules(name, group_name) or classify_group_name(group_name)
+    if not derived:
         return 'Default'
+
+    OreCategory.objects.update_or_create(
+        type_id=type_id,
+        defaults={'type_name': name or f'Type {type_id}', 'category': derived},
+    )
+    logger.info(f'Classified unseeded type {type_id} ({name or "unknown"}) as {derived}')
+    return derived
 
 
 def get_tax_rate(category):
@@ -222,9 +330,17 @@ def calculate_alliance_billing(year, month):
         corp_entry['total_mined'] += entry.total_value
         corp_entry['total_tax'] += tax_info['tax_amount']
 
-        member_name = _get_main_character_name(entry.character)
+        # Resolve to the main so a player's alts roll up into one row, and keep
+        # the main's character_id alongside it so the overview can link straight
+        # to that pilot's detail page.
+        main = _get_main_character(entry.character) or entry.character
+        member_name = main.character_name
         if member_name not in corp_entry['members']:
-            corp_entry['members'][member_name] = {'mined': Decimal('0'), 'tax': Decimal('0')}
+            corp_entry['members'][member_name] = {
+                'mined': Decimal('0'),
+                'tax': Decimal('0'),
+                'character_id': main.character_id,
+            }
         corp_entry['members'][member_name]['mined'] += entry.total_value
         corp_entry['members'][member_name]['tax'] += tax_info['tax_amount']
 

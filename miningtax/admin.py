@@ -1,7 +1,8 @@
 from django.contrib import admin
 from .models import (
     General, OreCategory, TaxRate, MiningLedgerEntry, AllianceMoon,
-    FleetSession, MoonRental, AllianceBillingRecord, TaxExemption
+    FleetSession, MoonRental, AllianceBillingRecord, TaxExemption,
+    OreCategoryRule
 )
 
 
@@ -70,8 +71,9 @@ class AllianceBillingRecordAdmin(admin.ModelAdmin):
 # Erz-Kategorien — nur lesend, werden per Management Command befüllt
 @admin.register(OreCategory)
 class OreCategoryAdmin(admin.ModelAdmin):
-    list_display = ('type_id', 'type_name', 'category')
-    list_filter = ('category',)
+    list_display = ('type_id', 'type_name', 'category', 'locked')
+    list_filter = ('category', 'locked')
+    list_editable = ('category', 'locked')
     search_fields = ('type_name',)
 
 
@@ -88,3 +90,13 @@ class TaxExemptionAdmin(admin.ModelAdmin):
         'corporation__corporation_name',
         'reason',
     )
+
+
+# Namensregeln für die Erz-Einordnung. Greifen vor EVEs eigener Gruppierung
+# und gelten auch für Erze, die es noch gar nicht gibt — solange der Name passt.
+@admin.register(OreCategoryRule)
+class OreCategoryRuleAdmin(admin.ModelAdmin):
+    list_display = ('contains', 'match_field', 'category', 'priority', 'active', 'note')
+    list_editable = ('category', 'priority', 'active')
+    list_filter = ('active', 'match_field', 'category')
+    search_fields = ('contains', 'category', 'note')

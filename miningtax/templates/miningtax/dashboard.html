@@ -5,6 +5,21 @@
 {% block page_title %}{% trans "Mining Tax" %}{% endblock %}
 
 {% block content %}
+<style>
+  /* Highlighted rows (tax-excluded entries) bring their own foreground and
+     background colour, but links keep the theme's link colour — which lands
+     light-on-light in dark themes and is effectively unreadable. Inheriting the
+     row's own colour is theme-agnostic: whatever Bootstrap picked for the row
+     text is guaranteed to contrast with the row background. The underline keeps
+     the link recognisable as one now that the colour no longer marks it. */
+  .table-success a,
+  .table-success a:hover,
+  .table-success a:focus {
+    color: inherit;
+    text-decoration: underline;
+  }
+</style>
+
 <div class="container">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h1>⛏️ {% trans "Mining Tax" %} — {{ month }}</h1>
@@ -83,7 +98,11 @@
             {% for row in rows %}
             <tr {% if row.excluded %}class="table-success"{% endif %}>
                 <td>{{ row.entry.date }}</td>
-                <td>{{ row.entry.character.character_name }}</td>
+                <td>
+                  <a href="{% url 'miningtax:pilot_detail' row.entry.character.character_id %}?year={{ year }}&month={{ month_num }}">
+                    {{ row.entry.character.character_name }}
+                  </a>
+                </td>
                 <td>{{ row.entry.solar_system_name|default:"—" }}</td>
                 <td>{{ row.entry.type_name }}</td>
                 <td>{{ row.entry.quantity }}</td>

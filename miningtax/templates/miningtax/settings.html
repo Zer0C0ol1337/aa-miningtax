@@ -74,6 +74,81 @@
 
     {# TAB 1: TAX RATES #}
     <div class="tab-pane fade show active" id="tab-taxrates">
+
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Ore Type List" %}</strong></div>
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <div>
+              <div>{{ ore_type_count }} {% trans "ore types classified" %}</div>
+              {% if ore_uncategorized %}
+                <small class="text-warning">
+                  <i class="fas fa-exclamation-triangle"></i>
+                  {% blocktrans count counter=ore_uncategorized %}{{ counter }} mined type is still taxed at the Default rate{% plural %}{{ counter }} mined types are still taxed at the Default rate{% endblocktrans %}
+                </small>
+              {% else %}
+                <small class="text-muted">{% trans "Every type seen in mining data has a category." %}</small>
+              {% endif %}
+            </div>
+            <form method="post" action="{% url 'miningtax:settings_sync_ore_categories' %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-outline-primary">
+                <i class="fas fa-sync"></i> {% trans "Import ore list from ESI" %}
+              </button>
+            </form>
+          </div>
+          <div class="mt-2 text-muted small">
+            {% trans "Imports every mineable type in EVE and classifies it by its group, so newly introduced ore is never taxed at the Default rate by accident. Runs automatically with the daily sync; the button is for applying it right away." %}
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Add Rate for a Category" %}</strong></div>
+        <div class="card-body">
+          {% if categories_without_rate %}
+            <div class="alert alert-warning">
+              <i class="fas fa-exclamation-triangle"></i>
+              {% trans "These categories are in use but have no rate of their own, so ore in them is billed at the Default rate:" %}
+              <strong>{{ categories_without_rate|join:", " }}</strong>
+            </div>
+          {% endif %}
+          <form method="post" action="{% url 'miningtax:settings_add_taxrate' %}">
+            {% csrf_token %}
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label">{% trans "Category" %}</label>
+                {% if categories_without_rate %}
+                  <select name="ore_category" class="form-control" required>
+                    {% for category in categories_without_rate %}
+                      <option value="{{ category }}">{{ category }}</option>
+                    {% endfor %}
+                  </select>
+                {% else %}
+                  <input type="text" name="ore_category" class="form-control"
+                         placeholder="{% trans 'Category name' %}" required>
+                  <small class="text-muted">{% trans "Every category in use already has a rate." %}</small>
+                {% endif %}
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">{% trans "Tax Rate" %} (%)</label>
+                <input type="number" name="tax_rate" class="form-control"
+                       step="0.01" min="0" max="100" value="0" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">{% trans "Description" %}</label>
+                <input type="text" name="description" class="form-control">
+              </div>
+              <div class="col-md-2 d-flex align-items-end">
+                <button type="submit" class="btn btn-success w-100">
+                  <i class="fas fa-plus"></i> {% trans "Add" %}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header"><strong>{% trans "Tax Rates per Ore Category" %}</strong></div>
         <div class="card-body p-0">

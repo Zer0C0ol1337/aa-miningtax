@@ -930,3 +930,102 @@ def _fetch_bulk_prices():
 
         logger.debug(f'Market prices not updated: {e}')
         return {}
+
+
+# Market category 25 ("Asteroid") holds every mineable type in EVE: ordinary
+# ore, ice, moon ores and harvestable gas clouds alike.
+ASTEROID_CATEGORY_ID = 25
+
+
+def sync_ore_categories():
+    """
+    Imports every mineable type from ESI into OreCategory and classifies it by
+    its group. Walks category 25 -> groups -> types, so the result is complete
+    by construction rather than depending on someone remembering to add an ore.
+
+    Existing rows are updated, which repairs a wrong category from an earlier
+    seed. Returns (imported, updated).
+    """
+    from esi.exceptions import HTTPNotModified
+    from .billing import classify_group_name, category_from_rules
+    from .models import OreCategory
+
+    esi = _get_esi_client()
+
+    def _call(op, **kwargs):
+        # Every one of these is a static lookup, so a 304 means "you already
+        # have it" while we in fact have nothing in hand — hence the refetch.
+        try:
+            return op(**kwargs).results()
+        except HTTPNotModified:
+            return op(**kwargs).results(force_refresh=True)
+
+    try:
+        categories = _call(
+            esi.client.Universe.GetUniverseCategoriesCategoryId,
+            category_id=ASTEROID_CATEGORY_ID,
+        )
+    except Exception as e:
+        logger.warning(f'Could not load ore category list from ESI: {e}')
+        return 0, 0
+
+    if not categories:
+        return 0, 0
+
+    group_ids = getattr(categories[0], 'groups', None) or []
+    logger.info(f'Ore import: {len(group_ids)} group(s) in category {ASTEROID_CATEGORY_ID}')
+
+    imported = 0
+    updated = 0
+    skipped = 0
+
+    for group_id in group_ids:
+        try:
+            groups = _call(esi.client.Universe.GetUniverseGroupsGroupId, group_id=group_id)
+        except Exception as e:
+            logger.warning(f'Could not load group {group_id}: {e}')
+            continue
+
+        if not groups:
+            continue
+
+        group = groups[0]
+        group_name = getattr(group, 'name', '')
+        group_category = classify_group_name(group_name)
+        for type_id in (getattr(group, 'types', None) or []):
+            name = _get_type_name_db_first(type_id, esi)
+
+            # Alliance rules win over EVE's own grouping, and are evaluated per
+            # type so a single ore can be pulled out of an otherwise ordinary
+            # group — which is the whole point for things like Prismaticite.
+            category = category_from_rules(name, group_name) or group_category
+            if not category:
+                logger.debug(f'No category for "{name}" in group "{group_name}", skipping')
+                skipped += 1
+                continue
+
+            existing = OreCategory.objects.filter(type_id=type_id).first()
+            if existing and existing.locked:
+                # Deliberately categorised by hand — the import refreshes the
+                # name but leaves the category alone, otherwise a 0% ore would
+                # quietly revert to a taxed category overnight.
+                if existing.type_name != name:
+                    existing.type_name = name
+                    existing.save(update_fields=['type_name'])
+                skipped += 1
+                continue
+
+            _, created = OreCategory.objects.update_or_create(
+                type_id=type_id,
+                defaults={'type_name': name, 'category': category},
+            )
+            if created:
+                imported += 1
+            else:
+                updated += 1
+
+    logger.info(
+        f'Ore import complete — {imported} new, {updated} updated, '
+        f'{skipped} locked and left unchanged'
+    )
+    return imported, updated

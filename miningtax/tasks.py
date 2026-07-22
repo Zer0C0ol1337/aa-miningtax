@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 def daily_mining_sync():
     from .billing import save_billing_records_for_month
     from .payments import check_corp_payments
-    from .services import sync_sov_systems
+    from .services import sync_sov_systems, sync_ore_categories
+
+    # Refreshed first so any ore added to EVE is classified before the
+    # ledgers that reference it are priced and taxed.
+    ore_new, ore_updated = sync_ore_categories()
 
     synced_chars = sync_all_characters()
     synced_corps = sync_all_corp_observers()
@@ -26,6 +30,7 @@ def daily_mining_sync():
     payments_matched = check_corp_payments(today.year, today.month)
 
     result = (
+        f'{ore_new} new ore types, '
         f'{synced_chars} personal entries, '
         f'{synced_corps} corp observer entries, '
         f'{priced} prices updated, '

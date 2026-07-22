@@ -7,7 +7,7 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.core.exceptions import PermissionDenied
 from django.contrib import messages
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from .models import (
     MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord,
@@ -417,6 +417,29 @@ def settings_view(request):
     # Solar systems offered in the moon dropdowns. Sourced from the sovereignty
     # cache so officers only ever see their own space instead of all ~8000 EVE
     # systems. Empty until the sov sync has run at least once.
+    # Ore-list health, shown on the tax rates tab. "Uncategorized" counts types
+    # that actually appear in mining data but have no category — those are the
+    # ones silently taxed at the Default rate, so they're worth surfacing.
+    from .models import OreCategory
+    ore_type_count = OreCategory.objects.count()
+    mined_type_ids = set(
+        MiningLedgerEntry.objects.values_list('type_id', flat=True).distinct()
+    )
+    known_type_ids = set(OreCategory.objects.values_list('type_id', flat=True))
+    ore_uncategorized = len(mined_type_ids - known_type_ids)
+
+    # Categories that ore can end up in but which have no rate yet — those are
+    # silently billed at the Default rate, so they're surfaced for one-click
+    # creation instead of requiring a trip to the Django admin.
+    from .models import OreCategoryRule
+    used_categories = set(
+        OreCategory.objects.values_list('category', flat=True).distinct()
+    ) | set(
+        OreCategoryRule.objects.filter(active=True).values_list('category', flat=True)
+    )
+    rated_categories = set(TaxRate.objects.values_list('ore_category', flat=True))
+    categories_without_rate = sorted(c for c in used_categories - rated_categories if c)
+
     sov_systems = SovSystem.objects.order_by('system_name')
 
     # Corporations offered in the structure-corp picker on the moon forms. Scoped
@@ -445,6 +468,9 @@ def settings_view(request):
 
     context = {
         'tax_forms': tax_forms,
+        'ore_type_count': ore_type_count,
+        'categories_without_rate': categories_without_rate,
+        'ore_uncategorized': ore_uncategorized,
         'sov_systems': sov_systems,
         'structure_corps': structure_corps,
         'sov_last_sync': sov_last_sync,
@@ -744,4 +770,207 @@ def settings_toggle_exemption(request, pk):
         state = 'activated' if exemption.active else 'paused'
         logger.info(f'{request.user.username}: tax exemption {state} → {exemption}')
         messages.success(request, f'✅ Exemption {state}: {exemption}')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_basic_access)
+def pilot_detail(request, character_id):
+    """
+    Every ledger entry of a single player for one month — the main plus all
+    alts owned by the same Auth account, since tax is assessed per player.
+
+    Members reach this from their own dashboard and may only open their own
+    characters; officers reach it from the alliance billing member list and may
+    open anyone, with CEOs limited to their own corporation as elsewhere.
+    """
+    from calendar import month_name
+    from allianceauth.eveonline.models import EveCharacter
+
+    today = date.today()
+    year = int(request.GET.get('year', today.year))
+    month = int(request.GET.get('month', today.month))
+
+    main = get_object_or_404(EveCharacter, character_id=character_id)
+
+    # Any character on the requesting user's own account is fair game — the page
+    # shows that account either way, so there is nothing to withhold.
+    own_character_pks = set(
+        request.user.character_ownerships.all().values_list('character_id', flat=True)
+    )
+    is_own_character = main.pk in own_character_pks
+    is_officer = has_officer_access(request.user)
+
+    if not is_own_character:
+        if not is_officer:
+            messages.error(request, '❌ You can only view your own characters.')
+            return redirect('miningtax:dashboard')
+
+        restricted_to_corp = get_ceo_corp_id(request.user) if is_ceo_only(request.user) else None
+        if restricted_to_corp and main.corporation_id != restricted_to_corp:
+            messages.error(request, '❌ You can only view pilots of your own corporation.')
+            return redirect('miningtax:alliance_overview')
+
+    # All characters of the owning account. Falls back to the single character
+    # when it isn't registered in Auth, so an unlinked pilot still shows its own
+    # mining rather than an empty page.
+    try:
+        user = main.character_ownership.user
+        character_ids = list(
+            user.character_ownerships.all().values_list('character_id', flat=True)
+        )
+        characters = EveCharacter.objects.filter(pk__in=character_ids).order_by('character_name')
+    except Exception:
+        characters = EveCharacter.objects.filter(pk=main.pk)
+
+    entries = MiningLedgerEntry.objects.filter(
+        character__in=characters,
+        date__year=year,
+        date__month=month,
+    ).select_related('character').order_by('-date', 'character__character_name')
+
+    rows = []
+    totals = {'mined': Decimal('0'), 'tax': Decimal('0')}
+    per_character = {}
+    per_category = {}
+
+    for entry in entries:
+        corp = _corp_for_entry(entry)
+        tax_info = calculate_entry_tax(entry, corporation=corp)
+
+        rows.append({
+            'entry': entry,
+            'category': tax_info['category'],
+            'tax_rate': tax_info['tax_rate'],
+            'tax_amount': tax_info['tax_amount'],
+            'excluded': tax_info['excluded'],
+        })
+
+        totals['mined'] += entry.total_value
+        totals['tax'] += tax_info['tax_amount']
+
+        name = entry.character.character_name
+        bucket = per_character.setdefault(name, {'mined': Decimal('0'), 'tax': Decimal('0')})
+        bucket['mined'] += entry.total_value
+        bucket['tax'] += tax_info['tax_amount']
+
+        cat = tax_info['category']
+        cat_bucket = per_category.setdefault(
+            cat, {'value': Decimal('0'), 'tax': Decimal('0'), 'rate': tax_info['tax_rate']}
+        )
+        cat_bucket['value'] += entry.total_value
+        cat_bucket['tax'] += tax_info['tax_amount']
+
+    # Assemble one row per character up front rather than looking values up in
+    # the template — every character appears, including those with no mining
+    # this month, which is exactly how an alt that never synced becomes visible.
+    character_rows = []
+    for character in characters:
+        stats = per_character.get(character.character_name)
+        character_rows.append({
+            'name': character.character_name,
+            'is_main': character.character_id == main.character_id,
+            'has_data': stats is not None,
+            'mined': stats['mined'] if stats else Decimal('0'),
+            'tax': stats['tax'] if stats else Decimal('0'),
+        })
+
+    prev_year, prev_month = _prev_month(year, month)
+    next_year, next_month = _next_month(year, month)
+
+    context = {
+        'main': main,
+        'is_officer': is_officer,
+        # Drives the back link. Deliberately keyed on whose account is being
+        # viewed rather than on the viewer's role: an officer looking at their
+        # own characters got here from their dashboard, not from billing.
+        'viewing_own': is_own_character,
+        'characters': characters,
+        'character_rows': character_rows,
+        'rows': rows,
+        'totals': totals,
+        'per_character': per_character,
+        'per_category': per_category,
+        'month': f'{month_name[month]} {year}',
+        'year': year,
+        'month_num': month,
+        'prev_year': prev_year,
+        'prev_month': prev_month,
+        'next_year': next_year,
+        'next_month': next_month,
+    }
+    return render(request, 'miningtax/pilot_detail.html', context)
+
+
+def _corp_for_entry(entry):
+    """Corporation object for a ledger entry, needed for moon-rental checks."""
+    from allianceauth.eveonline.models import EveCorporationInfo
+    try:
+        return EveCorporationInfo.objects.get(corporation_id=entry.character.corporation_id)
+    except EveCorporationInfo.DoesNotExist:
+        return None
+
+
+@check_access(has_full_officer_access)
+def settings_sync_ore_categories(request):
+    """
+    Imports every mineable type from ESI and classifies it. Exposed as a button
+    so an officer can repair the ore table from the browser — the alternative
+    would be shell access on a live server.
+    """
+    if request.method != 'POST':
+        return redirect('miningtax:settings')
+
+    from .services import sync_ore_categories
+
+    imported, updated = sync_ore_categories()
+    if imported or updated:
+        messages.success(
+            request,
+            f'✅ Ore list refreshed — {imported} new, {updated} updated.'
+        )
+    else:
+        messages.warning(
+            request,
+            '⚠️ No ore types imported. Check the server log for the ESI error.'
+        )
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_add_taxrate(request):
+    """
+    Creates a rate for a category that has none yet. Without this the only way
+    to give a new category its own rate was the Django admin, which rather
+    defeats a settings page.
+    """
+    if request.method != 'POST':
+        return redirect('miningtax:settings')
+
+    category = (request.POST.get('ore_category') or '').strip()
+    rate = (request.POST.get('tax_rate') or '').strip()
+    description = (request.POST.get('description') or '').strip()
+
+    if not category:
+        messages.error(request, '❌ Pick a category.')
+        return redirect('miningtax:settings')
+
+    try:
+        rate_value = Decimal(rate or '0')
+    except (InvalidOperation, TypeError):
+        messages.error(request, '❌ That tax rate is not a number.')
+        return redirect('miningtax:settings')
+
+    if rate_value < 0 or rate_value > 100:
+        messages.error(request, '❌ Tax rate must be between 0 and 100.')
+        return redirect('miningtax:settings')
+
+    obj, created = TaxRate.objects.get_or_create(
+        ore_category=category,
+        defaults={'tax_rate': rate_value, 'description': description},
+    )
+    if created:
+        logger.info(f'{request.user.username}: tax rate for "{category}" created at {rate_value}%')
+        messages.success(request, f'✅ Rate for {category} created at {rate_value}%.')
+    else:
+        messages.warning(request, f'⚠️ {category} already has a rate.')
     return redirect('miningtax:settings')

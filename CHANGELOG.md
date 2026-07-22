@@ -1,6 +1,25 @@
 # Changelog
 
 
+## [0.10.0] - 2026-07-22
+
+### Added
+- **Per-pilot detail view.** Every ledger entry of a player for a month, split by character and by ore category. Officers reach it from the alliance billing member list, members from their own dashboard. It covers the whole account rather than one character, since tax is assessed per player, and lists characters with no mining as well — which is how an alt whose ledger never synced becomes visible instead of quietly missing. Access is decided per character: your own always, anyone's as an officer, own corporation only as a CEO
+- **Complete ore list imported from ESI.** Walks EVE's Asteroid category down to every mineable type and classifies each by its group, so completeness follows from the data rather than from anyone remembering to add an ore. Runs with the daily sync, plus a button on the Tax Rates tab
+- **Category rules.** Assign ore to a category by matching a substring of its name or group, evaluated ahead of EVE's own grouping. Abyssal ore and Prismaticite ship as rules, since both sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches
+- **Locked categories.** A category set by hand can be protected from the automatic import. Without it, an ore deliberately parked in its own category to be taxed at 0% would be reclassified overnight and taxed again, with nothing in the UI to explain why
+- **Tax rates can be created from Settings**, and categories in use without a rate are flagged — ore in them is billed at the Default rate with nothing else to indicate it
+
+### Changed
+- Ore with no category is now classified from its group in eveuniverse instead of falling through to the Default rate
+
+### Fixed
+- Selecting a solar system could return an empty moon list when ESI answered 304 while the local cache had missed. The system lookup and both name-resolution paths now discard the ETag and refetch once — harmless, since systems and moon names are static
+- Solar system names were stored as `Unknown (id)` placeholders for the same reason, leaving the dropdown showing IDs. Rows already stored that way are repaired on the next sync
+- The structure picker read from an endpoint requiring Director, so a member with in-game structure access still saw nothing. It now uses the corp's mining observers and tries every available token before concluding the role is missing
+- Character links in tax-excluded ledger rows were unreadable in dark themes; they now inherit the row's own text colour
+- The back link on the pilot detail page followed the viewer's role, so an officer opening their own character from the dashboard was sent to alliance billing — a page they had not come from. It now follows whose account is on screen
+
 ## [0.9.0] - 2026-07-21
 
 Tax exemptions for players and corporations, dropdown-driven moon configuration,
@@ -19,7 +38,12 @@ and removal of location-based taxation.
 
 ### Fixed
 - **The sovereignty filter never actually worked.** `SovSystem` was populated and displayed, but no code path ever consulted it during tax calculation — mining outside the tracked space was taxed regardless of configuration. Rather than fix it, the feature was removed, matching how it was being used in practice
-- Multi-line `{# ... #}` comment in `settings.html` rendered as visible text on every tab. Django's hash-comment syntax is single-line only; converted to a `{% comment %}` block
+- **Sovereignty sync was broken end to end** and silently tracked zero systems, leaving the new dropdowns without any systems to offer. Six separate faults had to be cleared: the operation was called `GetSovereigntyMap` (the client exposes `GetSovereigntySystems`); only corp-held sovereignty was matched, while null-sec is held by *alliances*; a 304 response was treated as a failed request; the recovery from a stale ETag was rate-limited so strictly that the manual sync button could not retry; `results()` was used on an unpaginated endpoint, wrapping the whole response in a one-element list; and the payload is nested (`solar_systems[].claim`) with the claim wrapped in a Pydantic `RootModel`, so the alliance never resolved
+- Selecting a solar system could return an empty moon list when ESI answered 304 while the local result cache had missed. The system lookup and both name-resolution paths now discard the ETag and refetch once — harmless, since systems and moon names are static
+- Add-moon form columns summed to 13 of 12, pushing the last field out of view
+
+### Notes
+- The structure picker reads a corporation's mining observers, which ESI gates behind an in-game role (Accountant or Director) *in addition* to the `esi-industry.read_corporation_mining.v1` scope. Where no capable token exists the dropdown says so explicitly — distinguishing a missing token, a missing role, a corp without drills, and a genuine ESI error — and falls back to structure names already seen in the ledger
 
 
 ## [0.8.1] - 2026-07-17

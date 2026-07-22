@@ -206,7 +206,13 @@
                     <tbody>
                         {% for name, data in corp.members.items %}
                         <tr>
-                            <td>{{ name }}</td>
+                            <td>
+                              {% if data.character_id %}
+                                <a href="{% url 'miningtax:pilot_detail' data.character_id %}?year={{ year }}&month={{ month }}">{{ name }}</a>
+                              {% else %}
+                                {{ name }}
+                              {% endif %}
+                            </td>
                             <td>{{ data.mined|isk }} ISK</td>
                             <td>{{ data.tax|isk }} ISK</td>
                         </tr>

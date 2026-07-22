@@ -1,0 +1,209 @@
+{% extends "allianceauth/base-bs5.html" %}
+{% load i18n %}
+{% load miningtax_tags %}
+
+{% block page_title %}{% trans "Pilot Detail" %}{% endblock %}
+
+{% block content %}
+<style>
+  /* Highlighted rows (tax-excluded entries) bring their own foreground and
+     background colour, but links keep the theme's link colour — which lands
+     light-on-light in dark themes and is effectively unreadable. Inheriting the
+     row's own colour is theme-agnostic: whatever Bootstrap picked for the row
+     text is guaranteed to contrast with the row background. The underline keeps
+     the link recognisable as one now that the colour no longer marks it. */
+  .table-success a,
+  .table-success a:hover,
+  .table-success a:focus {
+    color: inherit;
+    text-decoration: underline;
+  }
+</style>
+
+<div class="container-fluid">
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">
+        <i class="fas fa-user-astronaut"></i> {{ main.character_name }}
+      </h2>
+      <div class="text-muted">
+        {{ main.corporation_name }}
+        {% if main.alliance_name %}— {{ main.alliance_name }}{% endif %}
+      </div>
+    </div>
+    <div class="d-flex gap-2">
+      {% if viewing_own %}
+        <a href="{% url 'miningtax:dashboard' %}?year={{ year }}&month={{ month_num }}"
+           class="btn btn-secondary">
+          <i class="fas fa-arrow-left"></i> {% trans "Back to My Mining" %}
+        </a>
+      {% else %}
+        <a href="{% url 'miningtax:alliance_overview' %}?year={{ year }}&month={{ month_num }}"
+           class="btn btn-secondary">
+          <i class="fas fa-arrow-left"></i> {% trans "Back to Alliance Billing" %}
+        </a>
+      {% endif %}
+      {% comment %}
+        Officers viewing their own characters still get a way over to billing —
+        as a second, quieter button, so the one matching where they came from
+        stays the obvious choice.
+      {% endcomment %}
+      {% if viewing_own and is_officer %}
+        <a href="{% url 'miningtax:alliance_overview' %}?year={{ year }}&month={{ month_num }}"
+           class="btn btn-secondary opacity-75">
+          <i class="fas fa-file-invoice-dollar"></i> {% trans "Alliance Billing" %}
+        </a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <a href="{% url 'miningtax:pilot_detail' main.character_id %}?year={{ prev_year }}&month={{ prev_month }}"
+       class="btn btn-sm btn-secondary">
+      <i class="fas fa-chevron-left"></i>
+    </a>
+    <h4 class="mb-0">{{ month }}</h4>
+    <a href="{% url 'miningtax:pilot_detail' main.character_id %}?year={{ next_year }}&month={{ next_month }}"
+       class="btn btn-sm btn-secondary">
+      <i class="fas fa-chevron-right"></i>
+    </a>
+  </div>
+
+  <div class="row mb-4">
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="text-muted">{% trans "Total Mined (Value)" %}</div>
+          <div class="fs-4">{{ totals.mined|isk }} ISK</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="text-muted">{% trans "Total Tax" %}</div>
+          <div class="fs-4 text-danger">{{ totals.tax|isk }} ISK</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% comment %}
+    Per-character split. Useful for spotting an alt that never synced: it will
+    either be missing here entirely or show a suspiciously low figure.
+  {% endcomment %}
+  <div class="card mb-4">
+    <div class="card-header">
+      <strong>{% trans "Characters" %}</strong>
+      <span class="text-muted small ms-2">
+        {% blocktrans count counter=characters|length %}{{ counter }} character on this account{% plural %}{{ counter }} characters on this account{% endblocktrans %}
+      </span>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>{% trans "Character" %}</th>
+            <th>{% trans "Mined" %}</th>
+            <th>{% trans "Tax" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in character_rows %}
+          <tr>
+            <td>
+              {{ row.name }}
+              {% if row.is_main %}
+                <span class="badge bg-secondary">{% trans "Main" %}</span>
+              {% endif %}
+            </td>
+            {% if row.has_data %}
+              <td>{{ row.mined|isk }} ISK</td>
+              <td>{{ row.tax|isk }} ISK</td>
+            {% else %}
+              <td colspan="2" class="text-muted">{% trans "No mining recorded this month" %}</td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% if per_category %}
+  <div class="card mb-4">
+    <div class="card-header"><strong>{% trans "By Ore Category" %}</strong></div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>{% trans "Category" %}</th>
+            <th>{% trans "Rate" %}</th>
+            <th>{% trans "Value" %}</th>
+            <th>{% trans "Tax" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for category, data in per_category.items %}
+          <tr>
+            <td><span class="badge bg-info text-dark">{{ category }}</span></td>
+            <td>{{ data.rate }}%</td>
+            <td>{{ data.value|isk }} ISK</td>
+            <td>{{ data.tax|isk }} ISK</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-header"><strong>{% trans "Ledger Entries" %}</strong></div>
+    <div class="card-body p-0">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>{% trans "Date" %}</th>
+            <th>{% trans "Character" %}</th>
+            <th>{% trans "Location" %}</th>
+            <th>{% trans "Ore" %}</th>
+            <th>{% trans "Quantity" %}</th>
+            <th>{% trans "Category" %}</th>
+            <th>{% trans "Value" %}</th>
+            <th>{% trans "Tax" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr {% if row.excluded %}class="table-success"{% endif %}>
+            <td>{{ row.entry.date }}</td>
+            <td>{{ row.entry.character.character_name }}</td>
+            <td>{{ row.entry.solar_system_name|default:"—" }}</td>
+            <td>{{ row.entry.type_name }}</td>
+            <td>{{ row.entry.quantity }}</td>
+            <td><span class="badge bg-info text-dark">{{ row.category }}</span></td>
+            <td>{{ row.entry.total_value|isk }} ISK</td>
+            <td>
+              {% if row.excluded %}
+                <span class="badge bg-success">{% trans "Excluded" %}</span>
+              {% else %}
+                {{ row.tax_amount|isk }} ISK
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="8" class="text-center text-muted py-3">
+              {% trans "No mining data for this month." %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

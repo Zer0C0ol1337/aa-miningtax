@@ -6,11 +6,15 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 
 - **Personal mining dashboard** — this month's ledger entries with calculated tax
 - **Alliance-wide billing overview** — all corps, all members (grouped by main character), tax by ore category, moon rental fees, and total due
-- **Configurable tax rates** per ore category (R4 / R8 / R16 / R32 / R64 / Ice / Ore / Gas / Mercoxit)
+- **Configurable tax rates** per ore category (R4 / R8 / R16 / R32 / R64 / Ice / Ore / Gas / Mercoxit), plus any category you define yourself
+- **Complete ore list, maintained by ESI** — every mineable type is imported and classified by its EVE group, so a newly introduced ore is never taxed at the Default rate unnoticed. The Settings page reports how many mined types still lack a category
+- **Category rules** — assign ore to a category by name, ahead of EVE's own grouping: abyssal ore and Prismaticite sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches. A category can also be locked so the automatic import leaves it alone
 - **Refined-value pricing (optional)** — value ore by the market value of the minerals it reprocesses into (Janice split price × eveuniverse reprocessing recipes), instead of the manipulable raw ore price; falls back to ESI reference prices when disabled or unreachable
-- **Sovereignty tax filter (optional)** — tax only mining that happens inside a corporation's current sovereignty systems, refreshed automatically from ESI's sovereignty map
+- **Tax exemptions** — exempt a whole corporation, or a single player by their main character; alts on the same Alliance Auth account are covered automatically, including ones registered later. Exemptions can be paused instead of deleted
 - **Moon rentals** — corps renting a moon pay a flat monthly fee; mining there is tax-free for them
 - **Tax-free event moons** — alliance moons can be marked tax-free, optionally scoped to a specific structure when several share one solar system
+- **Dropdown moon configuration** — solar system, moon and structure are picked from lists rather than typed. Moons come from ESI for the chosen system, structures from the corp's mining observers, so a typo can no longer quietly break exemption matching
+- **Per-pilot detail view** — every ledger entry of a player for a month, split by character and by ore category. Officers reach it from the billing member list, members from their own dashboard for their own characters. Characters with no mining are listed too, which is how an alt that never synced becomes visible
 - **PDF invoices** — per-corp invoice or all corps as a ZIP
 - **Corp Observer sync** — a director/CEO token pulls mining data for all moons/structures of a corp, covering members who never log in to Alliance Auth themselves
 - **Corptools integration** — reads mining data directly from Corptools' DB when available (zero extra ESI calls), falls back to its own ESI sync otherwise
@@ -158,6 +162,8 @@ Superusers (`is_staff`/`is_superuser`) always have full access regardless of ass
 Reachable at `/miningtax/settings/` (requires the real `mining_officer` permission or superuser — CEO auto-access does not reach this page). Six tabs:
 
 ### Tax Rates
+Also imports the full ore list from ESI on demand, reports how many mined types still have no category, and lets you create a rate for a category that has none — those are billed at the Default rate until you do.
+
 Per-category tax rate, including a dedicated **Mercoxit** category. `0.00%` is a valid, deliberate value (e.g. tax-free event ores) and is respected as-is.
 
 ### Moon Rentals
@@ -174,8 +180,11 @@ Configure which corporation's wallet is monitored for incoming tax payments, and
 
 Requires a director/accountant character of the treasury corp with the `esi-wallet.read_corporation_wallets.v1` scope (via Corptools' Corporation Audit, not Character Audit).
 
-### Sovereignty
-Add a `SovFilterConfig` for a corporation to tax only the mining that happens inside that corp's current sovereignty systems. The system list is refreshed from ESI's public sovereignty map — click "Sync Sovereignty Now" or let the daily sync update it. No manual system list to maintain.
+### Systems
+Add a reference corporation to keep a live list of the systems it holds sovereignty in, refreshed from ESI's public sovereignty data by the daily sync or the button. That list fills the solar-system dropdowns used when configuring moons — it has **no** effect on taxation. A status card shows how many systems are cached and when they were last refreshed.
+
+### Exemptions
+Exempt a whole corporation, or a single player picked by main character. Pick the alliance to narrow the corp list, then the corp to narrow the main list, so a large alliance stays navigable. Leaving the main on "Whole corporation" exempts every member of the chosen corp; picking a main exempts that player and all their alts. Exemptions can be paused rather than deleted.
 
 ### Pricing
 Enable Janice refined-value pricing and store the API key (server-side, never shown to members). When enabled, ore is valued by its reprocessed mineral value instead of the raw ore price; when disabled or unreachable, pricing falls back to ESI reference prices. Requires the optional refined-value setup (step 3b).
@@ -204,17 +213,53 @@ Re-run `populate_ore_reprocessing` whenever new ore types are added to
 
 ---
 
-## Sovereignty Tax Filter
+## Ore Categories
 
-When one or more `SovFilterConfig` entries are active, mining is only taxed if it
-occurred inside a tracked corporation's current sovereignty systems. The list of
-systems is rebuilt from ESI's public sovereignty map (`/sovereignty/map/`, no
-token required) on every sync, so it always reflects live sovereignty — there is
-no manual system list to maintain. Use the "Sync Sovereignty Now" button in
-Settings to refresh it on demand.
+Every mineable type in EVE is imported from ESI and classified by its group:
+`Exceptional Moon Asteroids` becomes R64, `Harvestable Cloud` becomes Gas, and
+so on. Completeness follows from the data rather than from anyone remembering to
+add an ore, and the import runs with the daily sync as well as on demand from
+Settings.
 
-If no `SovFilterConfig` is active, this filter does nothing and all mining is
-taxed as normal.
+Where EVE's grouping isn't the right answer for taxation, **category rules**
+take precedence. A rule matches a substring of the ore or group name and assigns
+a category — abyssal ore and Prismaticite ship as rules out of the box, since
+both sit in ordinary asteroid groups yet warrant their own rate. Because rules
+match by name, a variant that doesn't exist yet is categorised correctly the
+first time it appears.
+
+A category set by hand can be **locked**, which keeps the import from
+reclassifying it. That matters for an ore deliberately parked in its own
+category to be taxed at 0%: without the lock, the nightly import would put it
+back and the tax would quietly return.
+
+Categories in use without a rate of their own are listed as a warning in
+Settings, because ore in them is billed at the Default rate with nothing else to
+indicate it.
+
+---
+
+## Moon Configuration
+
+System, moon and structure are chosen from dropdowns rather than typed, both
+when adding a moon and when editing one.
+
+**Systems** come from the sovereignty cache, so only your own space is offered
+instead of all ~8000 systems in EVE. Configure a reference corporation on the
+Systems tab first, otherwise the dropdown stays empty.
+
+**Moons** are fetched from ESI for the chosen system and cached for 30 days —
+the first pick of a system takes a moment, everything after that is instant.
+
+**Structures** come from the corp's mining observers, which covers every moon
+drill the corp owns rather than only the ones already seen in mining data. ESI
+gates this behind an **in-game role** (Accountant or Director) on top of the
+`esi-industry.read_corporation_mining.v1` scope, so it works only where a member
+of that corp holds one. All available tokens for the corp are tried before
+giving up, and the dropdown states which of the possible causes applies —
+missing token, missing role, no structures, or an ESI error — rather than simply
+showing nothing. Structure names already seen in mining data remain available
+regardless.
 
 ---
 
@@ -238,6 +283,15 @@ Use "Reset to Unpaid" to correct a mismatch, e.g. after testing.
 
 The "Members" table on each corp card groups mining activity by **main character** — an alt's mining is combined into its main's total via Alliance Auth's `UserProfile.main_character`. A character with no registered main (or not registered in Alliance Auth at all) is listed under its own name as a fallback.
 
+Clicking a player opens their **detail view**: every ledger entry for the month,
+split by character and by ore category. It covers the whole account rather than
+one character, since tax is assessed per player, and lists characters with no
+mining as well — which is how an alt whose ledger never synced becomes visible
+instead of quietly missing. Members reach the same page from their own dashboard
+by clicking one of their characters; access is decided per character, so anyone
+may open their own, officers may open anyone, and CEOs stay limited to their own
+corporation.
+
 ---
 
 ## URL Overview
@@ -250,7 +304,13 @@ The "Members" table on each corp card groups mining activity by **main character
 | `/miningtax/alliance/check-payments/` | Manual payment check (background task) | `mining_officer` only |
 | `/miningtax/settings/` | Settings | `mining_officer` only |
 | `/miningtax/settings/janice/save/` | Save Janice pricing config | `mining_officer` only |
-| `/miningtax/settings/sov-filter/sync-now/` | Refresh sovereignty systems | `mining_officer` only |
+| `/miningtax/alliance/pilot/<character_id>/` | Per-pilot detail (own characters, or anyone as officer) | `basic_access` (own) / `mining_officer` |
+| `/miningtax/settings/sov-filter/sync-now/` | Refresh the known systems list | `mining_officer` only |
+| `/miningtax/settings/ore-categories/sync/` | Import the ore list from ESI | `mining_officer` only |
+| `/miningtax/settings/taxrate/add/` | Create a rate for a category | `mining_officer` only |
+| `/miningtax/settings/exemption/add/` | Add a tax exemption | `mining_officer` only |
+| `/miningtax/api/moons/` | Moons of a system (JSON, for the dropdowns) | `mining_officer` only |
+| `/miningtax/api/structures/` | Structures of a corp (JSON, for the dropdowns) | `mining_officer` only |
 | `/miningtax/pdf/corp/<id>/` | PDF per corp | `mining_officer` or CEO |
 | `/miningtax/pdf/all/` | ZIP of all corps | `mining_officer` only |
 

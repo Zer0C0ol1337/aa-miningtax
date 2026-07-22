@@ -18,6 +18,14 @@ class OreCategory(models.Model):
     type_id = models.PositiveIntegerField(primary_key=True)
     type_name = models.CharField(max_length=255)
     category = models.CharField(max_length=50)
+    # Protects a hand-picked category from the daily ore import, which would
+    # otherwise reclassify it from the type's group every night. Needed whenever
+    # an ore is deliberately filed somewhere other than where EVE's data would
+    # put it — e.g. an ore parked in its own category to be taxed at 0%.
+    locked = models.BooleanField(
+        default=False,
+        help_text="Keep this category as set; the ore import won't touch it"
+    )
 
     class Meta:
         default_permissions = ()
@@ -260,3 +268,45 @@ class TaxExemption(models.Model):
         if self.character:
             return f"Character exempt: {self.character.character_name}"
         return 'Incomplete exemption'
+
+
+# Assigns ore to a category by name, ahead of the automatic classification.
+#
+# EVE's own grouping is the right default, but it doesn't always match how an
+# alliance wants to tax things: abyssal ore and Prismaticite sit in ordinary
+# asteroid groups, yet warrant their own rate. Rules keep that decision out of
+# the code — a new ore matching an existing rule is categorised the moment it
+# first appears, without anyone editing anything.
+class OreCategoryRule(models.Model):
+    MATCH_FIELDS = [
+        ('type_name', 'Ore name'),
+        ('group_name', 'EVE group name'),
+    ]
+
+    match_field = models.CharField(
+        max_length=20, choices=MATCH_FIELDS, default='type_name',
+        help_text='Whether to match against the ore name or its EVE group'
+    )
+    contains = models.CharField(
+        max_length=255,
+        help_text='Case-insensitive substring, e.g. "prismaticite" or "bezdnacine"'
+    )
+    category = models.CharField(
+        max_length=50,
+        help_text='Category to assign. Add a matching tax rate for it, '
+                  'otherwise the Default rate applies'
+    )
+    priority = models.PositiveSmallIntegerField(
+        default=100,
+        help_text='Lower runs first. Use it to let a specific rule beat a broader one'
+    )
+    active = models.BooleanField(default=True)
+    note = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        default_permissions = ()
+        ordering = ('priority', 'contains')
+        verbose_name = 'ore category rule'
+
+    def __str__(self):
+        return f'{self.get_match_field_display()} contains "{self.contains}" -> {self.category}'
