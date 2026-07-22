@@ -1,6 +1,27 @@
 # Changelog
 
 
+## [0.9.0] - 2026-07-21
+
+Tax exemptions for players and corporations, dropdown-driven moon configuration,
+and removal of location-based taxation.
+
+### Added
+- **Tax exemptions.** New `TaxExemption` model plus an *Exemptions* tab in Settings, letting officers exempt an entire corporation or a single player from mining tax (migration `0013_taxexemption`). Exemptions are granted per **main character** and automatically cover every alt that main owns in Auth — resolved live via `CharacterOwnership`, so an alt registered later is covered without any extra work. Exemptions are evaluated before ore categories, fleet sessions and moon settings, so they always take precedence
+- Exemptions can be **paused** instead of deleted, for arrangements that only apply temporarily (events, trial periods)
+- **Cascading pickers throughout the exemption form**: alliance narrows the corporation list, which in turn narrows the main-character list — an alliance with thousands of pilots stays navigable
+- **Moon configuration by dropdown instead of free text.** Solar system, moon and structure are now picked from lists on the *Alliance Moons* and *Moon Rentals* tabs (add form and edit dialog alike). Moons are fetched from ESI for the chosen system via a new JSON endpoint (`api_views.py`) and cached for 30 days, so a typo can no longer silently break tax-exemption matching
+- **Known Systems status card** on the *Systems* tab showing how many systems are cached and when they were last refreshed, so the state can be diagnosed from the UI without shell access on a live server
+
+### Changed
+- **Location no longer affects taxation.** The sovereignty tax filter has been removed: all mining is taxed regardless of where it took place. The sovereignty *system list* is kept and still syncs automatically, but now serves solely as the data source for the solar-system dropdowns. The former *Sovereignty* tab is now *Systems*, and its "Active" flag is gone
+- Sovereignty sync now runs for **every** configured reference corporation instead of only active ones, so the system list is available even though it no longer influences billing
+
+### Fixed
+- **The sovereignty filter never actually worked.** `SovSystem` was populated and displayed, but no code path ever consulted it during tax calculation — mining outside the tracked space was taxed regardless of configuration. Rather than fix it, the feature was removed, matching how it was being used in practice
+- Multi-line `{# ... #}` comment in `settings.html` rendered as visible text on every tab. Django's hash-comment syntax is single-line only; converted to a `{% comment %}` block
+
+
 ## [0.8.1] - 2026-07-17
 
 Bugfix release: correct ore type IDs, names, and tax categories.

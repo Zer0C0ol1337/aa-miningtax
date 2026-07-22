@@ -3,7 +3,10 @@ from decimal import Decimal
 from django.db.models import Sum
 from django.utils import timezone
 
-from .models import OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental, AllianceBillingRecord
+from .models import (
+    OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental,
+    AllianceBillingRecord, TaxExemption,
+)
 from .services import STRUCTURE_ID_THRESHOLD
 
 
@@ -91,6 +94,46 @@ def is_excluded_by_moon_rental(entry, corporation):
     ).exists()
 
 
+def _get_main_character(character):
+    """
+    The main character behind a given character, via
+    CharacterOwnership -> User -> UserProfile.main_character.
+    Returns None if the character isn't registered in Auth, has no owning
+    user, or that user never set a main.
+    """
+    try:
+        return character.character_ownership.user.profile.main_character
+    except Exception:
+        return None
+
+
+def is_tax_exempt(entry):
+    # Exemptions are granted per MAIN character (or per corporation), never per
+    # alt: exempting a main automatically covers every alt that main owns in
+    # Auth, so an officer doesn't have to tick 50 alts by hand. The direct
+    # character check stays as a fallback for pilots whose main can't be
+    # resolved (not registered in Auth, or no main set on the profile).
+    # Evaluated before every other exclusion, so an exemption always wins over
+    # ore category, fleet sessions and moon configuration.
+    character = entry.character
+
+    if TaxExemption.objects.filter(active=True, character=character).exists():
+        return True
+
+    main = _get_main_character(character)
+    if main and main.pk != character.pk:
+        if TaxExemption.objects.filter(active=True, character=main).exists():
+            return True
+
+    corp_id = character.corporation_id
+    if corp_id and TaxExemption.objects.filter(
+        active=True, corporation__corporation_id=corp_id
+    ).exists():
+        return True
+
+    return False
+
+
 def calculate_entry_tax(entry, corporation=None):
     category = get_ore_category(entry.type_id)
 
@@ -104,7 +147,8 @@ def calculate_entry_tax(entry, corporation=None):
             category = 'Gas'
 
     excluded = (
-        is_excluded_by_fleet_session(entry, category)
+        is_tax_exempt(entry)
+        or is_excluded_by_fleet_session(entry, category)
         or is_excluded_by_alliance_moon(entry)
         or is_excluded_by_moon_rental(entry, corporation)
     )

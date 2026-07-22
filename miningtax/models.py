@@ -227,3 +227,36 @@ class JaniceConfig(models.Model):
         # callers never have to handle DoesNotExist.
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+# Exempts either a single character OR an entire corporation from mining tax.
+# When an active exemption matches, that mining is excluded from billing the
+# same way tax-free moons are (0% tax), regardless of ore category, fleet
+# sessions or moon configuration. Checked first so an exemption always wins.
+class TaxExemption(models.Model):
+    character = models.ForeignKey(
+        EveCharacter, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='miningtax_exemptions',
+        help_text='Exempt a single character (leave blank when exempting a whole corporation)'
+    )
+    corporation = models.ForeignKey(
+        EveCorporationInfo, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='miningtax_exemptions',
+        help_text='Exempt an entire corporation (leave blank when exempting a single character)'
+    )
+    reason = models.CharField(
+        max_length=255, blank=True,
+        help_text='Optional note why this character/corp is exempt'
+    )
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        default_permissions = ()
+
+    def __str__(self):
+        if self.corporation:
+            return f"Corp exempt: {self.corporation.corporation_name}"
+        if self.character:
+            return f"Character exempt: {self.character.character_name}"
+        return 'Incomplete exemption'

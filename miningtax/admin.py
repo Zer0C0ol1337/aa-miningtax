@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     General, OreCategory, TaxRate, MiningLedgerEntry, AllianceMoon,
-    FleetSession, MoonRental, AllianceBillingRecord
+    FleetSession, MoonRental, AllianceBillingRecord, TaxExemption
 )
 
 
@@ -73,3 +73,18 @@ class OreCategoryAdmin(admin.ModelAdmin):
     list_display = ('type_id', 'type_name', 'category')
     list_filter = ('category',)
     search_fields = ('type_name',)
+
+
+# Steuerbefreiungen — entweder einzelner Character ODER ganze Corp.
+# Das jeweils andere Feld leer lassen. "active" ist direkt in der Liste
+# umschaltbar, so lässt sich eine Befreiung pausieren statt sie zu löschen.
+@admin.register(TaxExemption)
+class TaxExemptionAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'character', 'corporation', 'reason', 'active')
+    list_filter = ('active',)
+    list_editable = ('active',)
+    search_fields = (
+        'character__character_name',
+        'corporation__corporation_name',
+        'reason',
+    )

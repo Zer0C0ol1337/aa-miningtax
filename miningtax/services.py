@@ -341,42 +341,168 @@ def sync_all_characters():
 
 # ─── SOVEREIGNTY SYNC ──────────────────────────────────────────────────────────
 
-def sync_sov_systems():
+def _repair_unresolved_system_names(esi):
     """
-    Refreshes the SovSystem cache from ESI's public sovereignty map
-    (/sovereignty/map/, no token needed) for every active SovFilterConfig.
-    Rebuilds the table fully each run so it always reflects current
-    sovereignty — no manual system list to maintain.
+    Re-resolves SovSystem rows whose name is still a placeholder. Returns how
+    many were fixed. Cheap in the normal case: the queryset is empty and no ESI
+    call happens at all.
     """
+    from .models import SovSystem
+
+    broken = SovSystem.objects.filter(system_name__startswith='Unknown (')
+    repaired = 0
+    for row in broken:
+        name = _get_location_name_db_first(row.system_id, None, esi)
+        if name and not name.startswith('Unknown ('):
+            row.system_name = name
+            row.save(update_fields=['system_name'])
+            repaired += 1
+    return repaired
+
+
+def sync_sov_systems(force_recovery=False):
+    """
+    Refreshes the SovSystem cache from ESI's public sovereignty data
+    (no token needed). Rebuilds the table fully each run so it always reflects
+    current sovereignty — no manual system list to maintain.
+
+    The resulting list feeds the solar-system dropdowns on the Alliance Moons
+    tab. It has no effect on taxation — every ledger entry is taxed regardless
+    of where it was mined.
+
+    force_recovery lifts the once-a-day limit on discarding a stale ETag. It is
+    set when an officer presses the sync button, since that is an explicit
+    request; the scheduled daily run leaves it off and stays polite.
+    """
+    from django.core.cache import cache
     from .models import SovFilterConfig, SovSystem
 
-    configs = SovFilterConfig.objects.filter(active=True).select_related('corporation')
+    recovery_key = 'miningtax:sov_forced_refetch'
+    if force_recovery:
+        cache.delete(recovery_key)
+
+    configs = SovFilterConfig.objects.all().select_related('corporation')
     if not configs.exists():
         return 0
 
     esi = _get_esi_client()
 
+    from esi.exceptions import HTTPNotModified
+
+    def _fetch_sov_map(force=False):
+        # Single, unpaginated payload — hence result() rather than results().
+        # results() would wrap the whole response in a one-element list, which
+        # previously made the map look like it contained exactly one system.
+        return esi.client.Sovereignty.GetSovereigntySystems().result(force_refresh=force)
+
     try:
-        sov_map = esi.client.Sovereignty.GetSovereigntyMap().results()
+        sov_map = _fetch_sov_map()
+    except HTTPNotModified:
+        # Sovereignty is unchanged since the last fetch, so the stored ETag is
+        # doing its job and there is nothing to update.
+        #
+        # Unless our table is empty: then the ETag was stored by an earlier run
+        # that fetched successfully but failed to process the result, and ESI
+        # will keep answering 304 forever while we stay at zero systems. In that
+        # case the ETag has to be discarded and the data pulled again.
+        if SovSystem.objects.exists():
+            # Sovereignty itself is unchanged, but rows stored while name
+            # resolution was failing still carry an "Unknown (id)" placeholder.
+            # Those are repaired here, since the early return below would
+            # otherwise leave them broken until sovereignty happens to change.
+            repaired = _repair_unresolved_system_names(esi)
+            count = SovSystem.objects.count()
+            suffix = f', {repaired} name(s) repaired' if repaired else ''
+            logger.info(f'Sovereignty unchanged since last sync — {count} system(s) tracked{suffix}')
+            return count
+
+        # Recovery is rate-limited to once a day. Without that guard an install
+        # whose reference corporation legitimately holds no sovereignty would
+        # keep an empty table forever and force a full refetch on every single
+        # sync — defeating the point of the ETag entirely.
+        if cache.get(recovery_key):
+            logger.info(
+                'Sovereignty unchanged and still no systems stored; forced refetch '
+                'already attempted recently, honouring the ETag. Press the sync '
+                'button in Settings to retry immediately.'
+            )
+            return 0
+
+        cache.set(recovery_key, True, 60 * 60 * 24)
+        logger.info('Sovereignty unchanged but no systems stored — discarding ETag once and refetching')
+        try:
+            sov_map = _fetch_sov_map(force=True)
+        except Exception as e:
+            logger.warning(f'Forced sovereignty map request failed: {e}')
+            return 0
     except Exception as e:
         logger.warning(f'Sovereignty map request failed: {e}')
         return 0
 
-    target_corp_ids = {c.corporation.corporation_id for c in configs}
-    matching_systems = [s for s in sov_map if getattr(s, 'corporation_id', None) in target_corp_ids]
+    target_corp_ids = set()
+    target_alliance_ids = set()
+    for config in configs:
+        corp = config.corporation
+        target_corp_ids.add(corp.corporation_id)
+        if corp.alliance_id:
+            target_alliance_ids.add(corp.alliance.alliance_id)
+
+    # Response shape (compatibility date 2026-06-09):
+    #   SovereigntySystems.solar_systems[] -> { solar_system_id, claim }
+    # where claim is one of three variants: an alliance claim (carrying both
+    # alliance_id and the corporation_id of the sov holder), a faction claim,
+    # or simply unclaimed. Only alliance claims are of interest here.
+    solar_systems = getattr(sov_map, 'solar_systems', None) or []
+
+    matched = []
+    for entry in solar_systems:
+        claim = getattr(entry, 'claim', None)
+        # aiopenapi3 renders the claim union as a RootModel, so the actual
+        # variant (alliance / faction / unclaimed) sits one level down under
+        # .root. Faction and unclaimed systems carry no alliance and are skipped.
+        variant = getattr(claim, 'root', claim)
+        alliance_claim = getattr(variant, 'alliance', None)
+        if not alliance_claim:
+            continue
+
+        alliance_id = getattr(alliance_claim, 'alliance_id', None)
+        corp_id = getattr(alliance_claim, 'corporation_id', None)
+
+        if alliance_id in target_alliance_ids or corp_id in target_corp_ids:
+            matched.append((entry.solar_system_id, corp_id))
+
+    if not matched:
+        # Dump the alliance claims that ARE present so it's obvious which IDs
+        # the sov data actually carries versus what we're matching against —
+        # far quicker than guessing why nothing lined up.
+        sample = {}
+        for entry in solar_systems:
+            claim = getattr(entry, 'claim', None)
+            variant = getattr(claim, 'root', claim)
+            ac = getattr(variant, 'alliance', None)
+            if ac:
+                key = (getattr(ac, 'alliance_id', None), getattr(ac, 'corporation_id', None))
+                sample[key] = sample.get(key, 0) + 1
+        top = sorted(sample.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        logger.warning(
+            f'Sovereignty data covered {len(solar_systems)} system(s), none claimed by '
+            f'corp(s) {target_corp_ids or "—"} or alliance(s) {target_alliance_ids or "—"}. '
+            f'Present (alliance_id, corporation_id) → count: {top}'
+        )
 
     updated = 0
     seen_ids = set()
-    for sys_entry in matching_systems:
-        system_id = sys_entry.system_id
-        corp_id = sys_entry.corporation_id
+    for system_id, corp_id in matched:
         seen_ids.add(system_id)
-
         system_name = _get_location_name_db_first(system_id, None, esi)
-
         SovSystem.objects.update_or_create(
             system_id=system_id,
-            defaults={'system_name': system_name, 'corporation_id': corp_id}
+            defaults={
+                'system_name': system_name,
+                # Fall back to a configured corp so the non-null column is
+                # always satisfied, even if ESI omits the sov holder.
+                'corporation_id': corp_id or next(iter(target_corp_ids), 0),
+            }
         )
         updated += 1
 
@@ -400,7 +526,7 @@ def _get_esi_client():
             compatibility_date="2026-06-09",
             ua_appname="EVE Mining Manager Plugin",
             ua_version="1.0",
-            tags=['Industry', 'Universe', 'Market', 'Wallet', 'Alliance', 'Sovereignty'],
+            tags=['Industry', 'Universe', 'Market', 'Wallet', 'Alliance', 'Sovereignty', 'Corporation'],
         )
     return _esi_client
 
@@ -451,20 +577,37 @@ def _get_location_name_db_first(location_id, token, esi):
     if existing:
         return existing
 
+    from esi.exceptions import HTTPNotModified
+
     name = f'Unknown ({location_id})'
     if location_id > STRUCTURE_ID_THRESHOLD:
-        try:
-            structure = esi.client.Universe.GetUniverseStructuresStructureId(
+        def _fetch_structure(force=False):
+            return esi.client.Universe.GetUniverseStructuresStructureId(
                 structure_id=location_id, token=token
-            ).results()
+            ).results(force_refresh=force)
+
+        try:
+            try:
+                structure = _fetch_structure()
+            except HTTPNotModified:
+                # ESI holds an ETag for this ID while we have no name in hand,
+                # so honouring the 304 would store a permanent placeholder.
+                # Names are static, so one forced refetch settles it for good.
+                structure = _fetch_structure(force=True)
             name = structure[0].name if structure else f'Structure ({location_id})'
         except Exception:
             name = f'Structure ({location_id})'
     else:
-        try:
-            system = esi.client.Universe.GetUniverseSystemsSystemId(
+        def _fetch_system(force=False):
+            return esi.client.Universe.GetUniverseSystemsSystemId(
                 system_id=location_id
-            ).results()
+            ).results(force_refresh=force)
+
+        try:
+            try:
+                system = _fetch_system()
+            except HTTPNotModified:
+                system = _fetch_system(force=True)
             name = system[0].name if system else name
         except Exception:
             pass

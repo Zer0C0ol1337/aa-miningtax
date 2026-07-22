@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import pdf_views
+from . import api_views
 
 app_name = 'miningtax'
 
@@ -27,7 +28,14 @@ urlpatterns = [
     path('settings/sov-filter/<int:pk>/delete/', views.settings_delete_sov_filter, name='settings_delete_sov_filter'),
     path('settings/sov-filter/sync-now/', views.settings_sync_sov_now, name='settings_sync_sov_now'),
     path('settings/janice/save/', views.settings_save_janice, name='settings_save_janice'),
+    path('settings/exemption/add/', views.settings_add_exemption, name='settings_add_exemption'),
+    path('settings/exemption/<int:pk>/delete/', views.settings_delete_exemption, name='settings_delete_exemption'),
+    path('settings/exemption/<int:pk>/toggle/', views.settings_toggle_exemption, name='settings_toggle_exemption'),
 
     path('pdf/corp/<int:corp_id>/', pdf_views.download_corp_pdf, name='download_corp_pdf'),
     path('pdf/all/', pdf_views.download_all_corps_zip, name='download_all_corps_zip'),
+
+    # JSON endpoint feeding the dependent moon dropdown in the Settings UI
+    path('api/moons/', api_views.api_moons_for_system, name='api_moons_for_system'),
+    path('api/structures/', api_views.api_structures_for_corp, name='api_structures_for_corp'),
 ]

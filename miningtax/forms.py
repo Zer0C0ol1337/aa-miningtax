@@ -1,5 +1,9 @@
 from django import forms
-from .models import TaxRate, MoonRental, AllianceMoon, TreasuryConfig, SovFilterConfig, JaniceConfig
+from .models import (
+    TaxRate, MoonRental, AllianceMoon, TreasuryConfig, SovFilterConfig,
+    JaniceConfig, TaxExemption,
+)
+from allianceauth.eveonline.models import EveCharacter
 from allianceauth.eveonline.models import EveCorporationInfo
 
 
@@ -34,6 +38,26 @@ class CorporationSelect(forms.Select):
                 option['attrs']['data-alliance'] = str(alliance_eve_id)
             except EveCorporationInfo.DoesNotExist:
                 pass
+        return option
+
+
+# Adds a data-corp attribute to each <option> so the corporation dropdown can
+# narrow the main-character list client-side — same mechanism the alliance
+# filter already uses for corporations. The value stored in data-corp is the
+# EveCorporationInfo primary key, because that is what the corporation <select>
+# renders as its option values.
+class MainCharacterSelect(forms.Select):
+    def __init__(self, *args, corp_by_char=None, **kwargs):
+        self.corp_by_char = corp_by_char or {}
+        super().__init__(*args, **kwargs)
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(name, value, label, selected, index, subindex, attrs)
+        if value:
+            char_pk = value.value if hasattr(value, 'value') else value
+            corp_pk = self.corp_by_char.get(int(char_pk))
+            if corp_pk:
+                option['attrs']['data-corp'] = str(corp_pk)
         return option
 
 
@@ -112,20 +136,20 @@ class TreasuryConfigForm(forms.ModelForm):
         self.fields['wallet_division'].label = 'Wallet Division (1-7)'
 
 
-# Designates which corporation's EVE sovereignty defines taxable systems.
+# Designates whose sovereignty defines the known system list. Purely a data
+# source for the moon dropdowns — taxation is never restricted by location.
 class SovFilterConfigForm(forms.ModelForm):
     class Meta:
         model = SovFilterConfig
-        fields = ['corporation', 'active']
+        fields = ['corporation']
         widgets = {
             'corporation': CorporationSelect(attrs={'class': 'form-control', 'id': 'id_sov_corporation'}),
-            'active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
 
     def __init__(self, *args, alliance_ids=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['corporation'].queryset = _corps_for_alliances(alliance_ids)
-        self.fields['corporation'].label = 'Sovereignty Reference Corp'
+        self.fields['corporation'].label = 'Reference Corporation'
 
 
 # Config for the Janice refined-value pricing integration.
@@ -141,3 +165,87 @@ class JaniceConfigForm(forms.ModelForm):
                 'autocomplete': 'off',
             }),
         }
+
+
+# Exempts a single character or a whole corporation from mining tax.
+# Exactly one of the two fields must be filled — validated in clean() so an
+# officer can't accidentally save an exemption that matches nothing (or, worse,
+# one that silently exempts an entire corp when only one pilot was meant).
+class TaxExemptionForm(forms.ModelForm):
+    class Meta:
+        model = TaxExemption
+        fields = ['character', 'corporation', 'reason', 'active']
+        widgets = {
+            'reason': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'e.g. Alliance leadership, newbro programme...',
+            }),
+            'active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+        }
+
+    def __init__(self, *args, alliance_ids=None, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.fields['corporation'].queryset = _corps_for_alliances(alliance_ids)
+        self.fields['corporation'].widget = CorporationSelect(
+            attrs={'class': 'form-control', 'id': 'id_exempt_corporation'},
+            choices=[('', '— None —')] + [
+                (c.pk, c.corporation_name) for c in _corps_for_alliances(alliance_ids)
+            ],
+        )
+        self.fields['corporation'].required = False
+
+        # Only MAIN characters are listed. An exemption on a main automatically
+        # covers all of that player's alts (resolved at billing time via
+        # CharacterOwnership), so nobody has to pick 50 alts one by one.
+        # The list is further narrowed by the corporation dropdown in the UI,
+        # so an alliance with thousands of pilots stays navigable.
+        from allianceauth.authentication.models import UserProfile
+
+        main_ids = UserProfile.objects.filter(
+            main_character__isnull=False
+        ).values_list('main_character_id', flat=True)
+        mains = EveCharacter.objects.filter(
+            pk__in=main_ids
+        ).order_by('character_name')
+
+        # Map each main to the DB primary key of its corporation, so the
+        # client-side filter can compare against the corporation <select>.
+        corp_pk_by_eve_id = dict(
+            EveCorporationInfo.objects.values_list('corporation_id', 'pk')
+        )
+        corp_by_char = {
+            c.pk: corp_pk_by_eve_id.get(c.corporation_id)
+            for c in mains
+            if corp_pk_by_eve_id.get(c.corporation_id)
+        }
+
+        self.fields['character'].queryset = mains
+        self.fields['character'].widget = MainCharacterSelect(
+            attrs={'class': 'form-control', 'id': 'id_exempt_character'},
+            choices=[('', '— Whole corporation —')] + [
+                (c.pk, c.character_name) for c in mains
+            ],
+            corp_by_char=corp_by_char,
+        )
+        self.fields['character'].required = False
+        self.fields['character'].label = 'Main Character'
+
+    def clean(self):
+        cleaned = super().clean()
+        character = cleaned.get('character')
+        corporation = cleaned.get('corporation')
+
+        if not character and not corporation:
+            raise forms.ValidationError(
+                'Select a corporation — and optionally a main character within it.'
+            )
+
+        # The corporation dropdown does double duty: it narrows the main list,
+        # and it defines the exemption when no main is picked. So once a main
+        # is chosen, the corporation was only a filter and must not be stored,
+        # otherwise the whole corp would silently become exempt.
+        if character:
+            cleaned['corporation'] = None
+
+        return cleaned

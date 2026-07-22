@@ -11,13 +11,13 @@ from decimal import Decimal
 
 from .models import (
     MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord,
-    TreasuryConfig, SovFilterConfig, JaniceConfig,
+    TreasuryConfig, SovFilterConfig, JaniceConfig, TaxExemption, SovSystem,
 )
 from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
 from .services import sync_character_mining, update_market_prices, sync_all_corp_observers
 from .forms import (
     TaxRateForm, MoonRentalForm, AllianceMoonForm, TreasuryConfigForm,
-    SovFilterConfigForm, JaniceConfigForm,
+    SovFilterConfigForm, JaniceConfigForm, TaxExemptionForm,
 )
 
 logger = logging.getLogger(__name__)
@@ -414,8 +414,42 @@ def settings_view(request):
 
     tax_forms = [(tr, TaxRateForm(instance=tr, prefix=f'tax_{tr.pk}')) for tr in tax_rates]
 
+    # Solar systems offered in the moon dropdowns. Sourced from the sovereignty
+    # cache so officers only ever see their own space instead of all ~8000 EVE
+    # systems. Empty until the sov sync has run at least once.
+    sov_systems = SovSystem.objects.order_by('system_name')
+
+    # Corporations offered in the structure-corp picker on the moon forms. Scoped
+    # to the officer's own alliance(s) by default so the list stays short, and
+    # each carries its real EVE alliance_id so the alliance filter can narrow it
+    # client-side just like the other corp dropdowns.
+    from allianceauth.eveonline.models import EveCorporationInfo
+    structure_corps = []
+    for corp in EveCorporationInfo.objects.select_related('alliance').order_by('corporation_name'):
+        if alliance_ids and (not corp.alliance_id or corp.alliance.alliance_id not in alliance_ids):
+            continue
+        structure_corps.append({
+            'corporation_id': corp.corporation_id,
+            'corporation_name': corp.corporation_name,
+            'alliance_eve_id': corp.alliance.alliance_id if corp.alliance_id else '',
+        })
+    # Shown in the Sovereignty tab so officers can tell at a glance whether the
+    # sov cache is populated — without needing shell access on a live server.
+    sov_last_sync = SovSystem.objects.order_by('-updated_at').values_list(
+        'updated_at', flat=True
+    ).first()
+
+    tax_exemptions = TaxExemption.objects.select_related(
+        'character', 'corporation'
+    ).order_by('-active', 'corporation__corporation_name', 'character__character_name')
+
     context = {
         'tax_forms': tax_forms,
+        'sov_systems': sov_systems,
+        'structure_corps': structure_corps,
+        'sov_last_sync': sov_last_sync,
+        'tax_exemptions': tax_exemptions,
+        'exemption_form': TaxExemptionForm(alliance_ids=alliance_ids),
         'moon_rentals': moon_rentals,
         'alliance_moons': alliance_moons,
         'treasury_configs': treasury_configs,
@@ -645,7 +679,8 @@ def settings_sync_sov_now(request):
     from .services import sync_sov_systems
 
     logger.info(f'{request.user.username}: manual sovereignty sync triggered')
-    count = sync_sov_systems()
+    # Explicit officer action, so the daily ETag-recovery limit is lifted here.
+    count = sync_sov_systems(force_recovery=True)
     messages.success(request, f'✅ Sovereignty sync complete — {count} system(s) tracked.')
     return redirect('miningtax:settings')
 
@@ -662,4 +697,51 @@ def settings_save_janice(request):
         else:
             logger.warning(f'{request.user.username}: JaniceConfig form invalid: {form.errors}')
             messages.error(request, f'❌ Error: {form.errors}')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_add_exemption(request):
+    """Adds a tax exemption for either one character or a whole corporation."""
+    if request.method == 'POST':
+        alliance_ids = _own_alliance_ids(request.user)
+        form = TaxExemptionForm(request.POST, alliance_ids=alliance_ids)
+        if form.is_valid():
+            exemption = form.save()
+            logger.info(f'{request.user.username}: tax exemption added → {exemption}')
+            messages.success(request, f'✅ Exemption added: {exemption}')
+        else:
+            logger.warning(f'{request.user.username}: TaxExemption form invalid: {form.errors}')
+            error_text = '; '.join(
+                str(e) for errors in form.errors.values() for e in errors
+            )
+            messages.error(request, f'❌ {error_text}')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_delete_exemption(request, pk):
+    """Removes an exemption entirely — use toggle if it should only pause."""
+    exemption = get_object_or_404(TaxExemption, pk=pk)
+    if request.method == 'POST':
+        label = str(exemption)
+        exemption.delete()
+        logger.info(f'{request.user.username}: tax exemption deleted → {label}')
+        messages.success(request, f'🗑️ Exemption removed: {label}')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_toggle_exemption(request, pk):
+    """
+    Pauses or resumes an exemption without losing it. Handy for temporary
+    arrangements (events, trial periods) that come back later.
+    """
+    exemption = get_object_or_404(TaxExemption, pk=pk)
+    if request.method == 'POST':
+        exemption.active = not exemption.active
+        exemption.save(update_fields=['active'])
+        state = 'activated' if exemption.active else 'paused'
+        logger.info(f'{request.user.username}: tax exemption {state} → {exemption}')
+        messages.success(request, f'✅ Exemption {state}: {exemption}')
     return redirect('miningtax:settings')
