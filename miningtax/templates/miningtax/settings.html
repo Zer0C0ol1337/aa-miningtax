@@ -256,7 +256,8 @@
               </div>
               <div class="col-md-2">
                 <label class="form-label">{% trans "Solar System" %}</label>
-                <select id="rental_system" class="form-control" data-moon-target="rental_moon_name">
+                <select id="rental_system" class="form-control" data-moon-target="rental_moon_name"
+                        data-system-struct-target="id_structure_name">
                   <option value="">{% trans "— Select system —" %}</option>
                   {% for sys in sov_systems %}
                     <option value="{{ sys.system_name }}" data-system-id="{{ sys.system_id }}">{{ sys.system_name }}</option>
@@ -308,10 +309,10 @@
         <div class="card-body">
           <div class="alert alert-danger mb-3">
             <i class="fas fa-exclamation-triangle"></i>
-            {% blocktrans count counter=stale_moons|length %}{{ counter }} moon is marked tax free, but its structure name appears in no mining data — so the exemption never applies and that ore is being taxed.{% plural %}{{ counter }} moons are marked tax free, but their structure names appear in no mining data — so the exemptions never apply and that ore is being taxed.{% endblocktrans %}
+            {% blocktrans count counter=stale_moons|length %}{{ counter }} moon is marked tax free, but its structure name matches neither any mining data nor any structure EVE reports for that system — so the exemption cannot apply and that ore is being taxed.{% plural %}{{ counter }} moons are marked tax free, but their structure names match neither any mining data nor any structure EVE reports for those systems — so the exemptions cannot apply and that ore is being taxed.{% endblocktrans %}
           </div>
           <p class="text-muted small">
-            {% trans "Structure names used to be typed by hand and rarely match what ESI reports character for character. Edit each moon below and pick its structure from the dropdown. The closest observed name is offered as a hint — check it before applying, since exempting the wrong structure loses revenue without any visible sign." %}
+            {% trans "Structure names used to be typed by hand and rarely match what ESI reports character for character. Edit each moon below, choose its solar system, and pick the structure from the dropdown. The closest name already seen in mining data is offered as a hint — check it before applying, since exempting the wrong structure loses revenue without any visible sign." %}
           </p>
           <table class="table table-sm">
             <thead class="table-dark">
@@ -419,7 +420,7 @@
               <div class="col-md-2">
                 <label class="form-label">{% trans "Solar System" %}</label>
                 <select name="solar_system_name" id="add_moon_system" class="form-control"
-                        data-moon-target="add_moon_name">
+                        data-moon-target="add_moon_name" data-system-struct-target="add_moon_structure">
                   <option value="">{% trans "— Select system —" %}</option>
                   {% for sys in sov_systems %}
                     <option value="{{ sys.system_name }}" data-system-id="{{ sys.system_id }}">{{ sys.system_name }}</option>
@@ -434,18 +435,6 @@
                 <select name="name" id="add_moon_name" class="form-control" required>
                   <option value="">{% trans "— Select system first —" %}</option>
                 </select>
-              </div>
-              <div class="col-md-2">
-                <label class="form-label">{% trans "Structure Corp" %}</label>
-                <select id="add_moon_struct_corp" class="form-control"
-                        data-struct-target="add_moon_structure">
-                  <option value="">{% trans "— Select corp —" %}</option>
-                  {% for corp in structure_corps %}
-                    <option value="{{ corp.corporation_id }}"
-                            data-alliance="{{ corp.alliance_eve_id }}">{{ corp.corporation_name }}</option>
-                  {% endfor %}
-                </select>
-                <small class="text-muted">{% trans "Loads that corp's structures." %}</small>
               </div>
               <div class="col-md-2">
                 <label class="form-label">{% trans "Structure" %}</label>
@@ -1030,7 +1019,7 @@
           <div class="mb-3">
             <label class="form-label">{% trans "Solar System" %}</label>
             <select name="solar_system_name" id="edit_moon_system" class="form-control"
-                    data-moon-target="edit_moon_name">
+                    data-moon-target="edit_moon_name" data-system-struct-target="edit_moon_structure">
               <option value="">{% trans "— Select system —" %}</option>
               {% for sys in sov_systems %}
                 <option value="{{ sys.system_name }}" data-system-id="{{ sys.system_id }}">{{ sys.system_name }}</option>
@@ -1042,18 +1031,6 @@
             <select name="name" id="edit_moon_name" class="form-control" required>
               <option value="">{% trans "— Select system first —" %}</option>
             </select>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">{% trans "Structure Corp" %}</label>
-            <select id="edit_moon_struct_corp" class="form-control"
-                    data-struct-target="edit_moon_structure">
-              <option value="">{% trans "— Select corp —" %}</option>
-              {% for corp in structure_corps %}
-                <option value="{{ corp.corporation_id }}"
-                        data-alliance="{{ corp.alliance_eve_id }}">{{ corp.corporation_name }}</option>
-              {% endfor %}
-            </select>
-            <small class="text-muted">{% trans "Loads that corp's structures." %}</small>
           </div>
           <div class="mb-3">
             <label class="form-label">{% trans "Structure" %}</label>
@@ -1157,72 +1134,87 @@ async function loadMoonsInto(systemSelect, moonSelect, preselect) {
 // Loads a corp's structures into a structure <select>, fetched from ESI via our
 // own endpoint (cached server-side). Preserves any value already stored on the
 // moon so editing never silently clears it.
-const STRUCT_API_URL = "{% url 'miningtax:api_structures_for_corp' %}";
+const SYSTEM_STRUCT_API_URL = "{% url 'miningtax:api_structures_for_system' %}";
 
-async function loadStructuresInto(corpSelect, structSelect, preselect) {
-  if (!corpSelect || !structSelect) return;
-  const corpId = corpSelect.value;
-
-  // Preserve the "none" option plus any pre-existing/stored value.
+// Structures in the chosen solar system, as far as the officer can dock at
+// them. Falls back to the names already seen in mining data, same as the
+// corp lookup, so an empty result never costs what was already there.
+async function loadSystemStructuresInto(systemSelect, structSelect, preselect) {
+  if (!systemSelect || !structSelect) return;
+  const system = systemSelect.value;
   const keep = preselect || structSelect.value;
-  structSelect.innerHTML = '<option value="">{% trans "— None / not needed —" %}</option>';
 
-  if (!corpId) return;
+  if (!structSelect.dataset.observedSaved) {
+    structSelect.dataset.observedOptions = JSON.stringify(
+      Array.from(structSelect.options)
+        .filter(o => o.value)
+        .map(o => ({ value: o.value, text: o.textContent.trim() }))
+    );
+    structSelect.dataset.observedSaved = '1';
+  }
+  const observed = JSON.parse(structSelect.dataset.observedOptions || '[]');
+
+  function render(names, note) {
+    structSelect.innerHTML = '<option value="">{% trans "— None / not needed —" %}</option>';
+    if (note) {
+      const n = document.createElement('option');
+      n.value = ''; n.disabled = true; n.textContent = note;
+      structSelect.appendChild(n);
+    }
+    for (const item of names) {
+      const o = document.createElement('option');
+      o.value = typeof item === 'string' ? item : item.value;
+      o.textContent = typeof item === 'string' ? item : item.text;
+      if (keep && o.value === keep) o.selected = true;
+      structSelect.appendChild(o);
+    }
+    if (keep && !structSelect.value) {
+      const l = document.createElement('option');
+      l.value = keep; l.textContent = keep + ' {% trans "(current value)" %}';
+      l.selected = true;
+      structSelect.appendChild(l);
+    }
+  }
+
+  if (!system) { render(observed, null); return; }
 
   structSelect.disabled = true;
   try {
-    const resp = await fetch(`${STRUCT_API_URL}?corporation_id=${corpId}`);
+    const resp = await fetch(`${SYSTEM_STRUCT_API_URL}?system=${encodeURIComponent(system)}`);
     const data = await resp.json();
-
-    // Surface *why* a list is empty — silently showing nothing gives an officer
-    // no way to tell a missing token from a corp that simply has no drills.
-    if (!(data.structures || []).length && data.reason) {
+    const names = data.structures || [];
+    if (names.length) {
+      render(names, null);
+    } else {
       const hints = {
-        no_token: '{% trans "— No corp-mining token for this corp —" %}',
-        no_role: '{% trans "— Token holder lacks the in-game corp role —" %}',
-        no_observers: '{% trans "— This corp has no mining structures —" %}',
-        esi_error: '{% trans "— ESI request failed, see server log —" %}'
+        no_search_token: '{% trans "— No structure-search token, showing observed names —" %}',
+        search_failed:   '{% trans "— Structure search failed, showing observed names —" %}',
+        none_found:      '{% trans "— No structures you can dock at here, showing observed names —" %}'
       };
-      const note = document.createElement('option');
-      note.value = '';
-      note.disabled = true;
-      note.textContent = hints[data.reason] || '{% trans "— No structures found —" %}';
-      structSelect.appendChild(note);
-    }
-
-    for (const name of (data.structures || [])) {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      if (keep && name === keep) opt.selected = true;
-      structSelect.appendChild(opt);
-    }
-    // Keep a stored value that ESI no longer returns, so it isn't wiped.
-    if (keep && !structSelect.value) {
-      const legacy = document.createElement('option');
-      legacy.value = keep;
-      legacy.textContent = keep + ' {% trans "(current value)" %}';
-      legacy.selected = true;
-      structSelect.appendChild(legacy);
+      render(observed, hints[data.reason] || null);
     }
   } catch (err) {
-    /* leave just the none option on failure */
+    render(observed, '{% trans "— Could not reach the server, showing observed names —" %}');
   } finally {
     structSelect.disabled = false;
   }
 }
-
-document.querySelectorAll('select[data-struct-target]').forEach(function (corpSelect) {
-  corpSelect.addEventListener('change', function () {
-    loadStructuresInto(corpSelect, document.getElementById(corpSelect.dataset.structTarget), null);
-  });
-});
 
 // Any system <select> carrying data-moon-target repopulates its paired moon
 // <select> on change — works for both the add form and the edit modal.
 document.querySelectorAll('select[data-moon-target]').forEach(function (systemSelect) {
   systemSelect.addEventListener('change', function () {
     loadMoonsInto(systemSelect, document.getElementById(systemSelect.dataset.moonTarget), null);
+    // Structures follow the system too. Searching by system name uses the
+    // officer's own docking access, so it works without any corporation role —
+    // which the corp endpoints require, and most officers do not have.
+    if (systemSelect.dataset.systemStructTarget) {
+      loadSystemStructuresInto(
+        systemSelect,
+        document.getElementById(systemSelect.dataset.systemStructTarget),
+        null
+      );
+    }
   });
 });
 
@@ -1231,16 +1223,23 @@ document.getElementById('editMoonModal').addEventListener('show.bs.modal', funct
   const moonId = btn.getAttribute('data-moon-id');
   document.getElementById('editMoonForm').action = `/miningtax/settings/moon/${moonId}/edit/`;
 
-  // System and structure are plain <select>s whose options are rendered
-  // server-side, so assigning .value is enough. The moon list, however, is
-  // fetched on demand — loadMoonsInto() pre-selects the stored name once the
-  // request comes back, so the current value never appears blank.
-  document.getElementById('edit_moon_system').value    = btn.getAttribute('data-moon-system');
-  document.getElementById('edit_moon_structure').value = btn.getAttribute('data-moon-structure');
+  // The system <select> is rendered server-side, so assigning .value is enough.
+  // Both dependent lists are fetched on demand and have to be kicked off by
+  // hand: setting .value in code fires no change event, so the listeners that
+  // normally populate them never hear about it. Each is given the stored value
+  // to pre-select, so neither appears blank while the request is in flight.
+  const editSystem = document.getElementById('edit_moon_system');
+  editSystem.value = btn.getAttribute('data-moon-system');
+
   loadMoonsInto(
-    document.getElementById('edit_moon_system'),
+    editSystem,
     document.getElementById('edit_moon_name'),
     btn.getAttribute('data-moon-name')
+  );
+  loadSystemStructuresInto(
+    editSystem,
+    document.getElementById('edit_moon_structure'),
+    btn.getAttribute('data-moon-structure')
   );
 
   // Explicitly select the matching <option> (more reliable across browsers

@@ -99,12 +99,50 @@ def _category_from_eveuniverse(type_id):
     return classify_group_name(eve_type.eve_group.name)
 
 
+def _type_and_group_from_esi(type_id):
+    """
+    A type's own name and its group name, straight from ESI.
+
+    The last resort when eveuniverse cannot answer — either because it is not
+    installed, or because its type data predates the ore in question. Without
+    this, ore introduced by an expansion sits at the Default rate until someone
+    notices and reloads eveuniverse, which is not a thing anyone thinks to check.
+    """
+    from .services import _get_esi_client
+    from esi.exceptions import HTTPNotModified
+
+    esi = _get_esi_client()
+
+    def _fetch(op, **kwargs):
+        try:
+            return op(**kwargs).results()
+        except HTTPNotModified:
+            return op(**kwargs).results(force_refresh=True)
+
+    try:
+        types = _fetch(esi.client.Universe.GetUniverseTypesTypeId, type_id=type_id)
+        if not types:
+            return '', ''
+        eve_type = types[0]
+        name = getattr(eve_type, 'name', '') or ''
+        group_id = getattr(eve_type, 'group_id', None)
+        if not group_id:
+            return name, ''
+
+        groups = _fetch(esi.client.Universe.GetUniverseGroupsGroupId, group_id=group_id)
+        group_name = getattr(groups[0], 'name', '') if groups else ''
+        return name, group_name
+    except Exception as e:
+        logger.debug(f'Could not classify type {type_id} via ESI: {e}')
+        return '', ''
+
+
 def get_ore_category(type_id):
     """
     Category for an ore type. The OreCategory table wins, so anything an officer
-    corrected by hand stays corrected; unknown types are classified from
-    eveuniverse and written back, which both fixes the current calculation and
-    makes the result visible and editable in the admin afterwards.
+    corrected by hand stays corrected; unknown types are classified from their
+    group and written back, which both fixes the current calculation and makes
+    the result visible and editable in the admin afterwards.
     """
     try:
         return OreCategory.objects.get(type_id=type_id).category
@@ -122,8 +160,18 @@ def get_ore_category(type_id):
     except ImportError:
         pass
 
+    if not group_name:
+        # eveuniverse either isn't installed or doesn't know this type. Asking
+        # ESI covers ore outside the Asteroid category the bulk import walks,
+        # and ore added after eveuniverse was last loaded.
+        name, group_name = _type_and_group_from_esi(type_id)
+
     derived = category_from_rules(name, group_name) or classify_group_name(group_name)
     if not derived:
+        logger.info(
+            f'Type {type_id} ("{name or "unknown"}", group "{group_name or "unknown"}") '
+            f'matches no category rule, taxed at the Default rate'
+        )
         return 'Default'
 
     OreCategory.objects.update_or_create(

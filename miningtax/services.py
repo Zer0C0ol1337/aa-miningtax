@@ -554,7 +554,7 @@ def _get_esi_client():
             compatibility_date="2026-06-09",
             ua_appname="EVE Mining Manager Plugin",
             ua_version="1.0",
-            tags=['Industry', 'Universe', 'Market', 'Wallet', 'Alliance', 'Sovereignty', 'Corporation'],
+            tags=['Industry', 'Universe', 'Market', 'Wallet', 'Alliance', 'Sovereignty', 'Corporation', 'Search'],
         )
     return _esi_client
 

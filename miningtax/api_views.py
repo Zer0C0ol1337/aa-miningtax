@@ -289,3 +289,135 @@ def api_structures_for_corp(request):
 
     names, reason = get_structures_for_corp(int(corp_id))
     return JsonResponse({'structures': names, 'reason': reason})
+
+
+# Scope for searching structures. Unlike the corp endpoints this needs no
+# in-game role — it returns what the searching character can dock at, which is
+# precisely the set someone with structure access sees in the client.
+SEARCH_SCOPE = 'esi-search.search_structures.v1'
+
+
+def _search_token_for(user):
+    """
+    A search-capable token belonging to the requesting officer.
+
+    Deliberately their own rather than any token on the system: search results
+    depend on docking access, so using someone else's would show structures the
+    officer cannot see, or hide ones they can, with nothing to explain the
+    difference.
+    """
+    character_ids = list(
+        user.character_ownerships.select_related('character')
+        .values_list('character__character_id', flat=True)
+    )
+    if not character_ids:
+        return None
+
+    return (
+        Token.objects
+        .filter(character_id__in=character_ids)
+        .require_scopes(SEARCH_SCOPE)
+        .require_valid()
+        .first()
+    )
+
+
+def get_structures_in_system(system_name, token):
+    """
+    Structure names in a solar system, as far as the token's character can see
+    them. Cached for six hours; structures are added rarely.
+
+    Works by searching for the system name, which EVE puts at the start of every
+    structure name by default. A structure renamed to drop it will not be found
+    — a limitation worth knowing, though renaming that way is unusual precisely
+    because it makes structures hard to identify in-game too.
+    """
+    cache_key = f'miningtax:sys_structures:{system_name.lower()}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached, None
+
+    if not token:
+        return [], 'no_search_token'
+
+    esi = _get_esi_client()
+
+    def _search(force=False):
+        return esi.client.Search.GetCharactersCharacterIdSearch(
+            character_id=token.character_id,
+            categories=['structure'],
+            search=system_name,
+            token=token,
+        ).results(force_refresh=force)
+
+    try:
+        try:
+            result = _search()
+        except HTTPNotModified:
+            result = _search(force=True)
+    except Exception as e:
+        logger.warning(f'Structure search for "{system_name}" failed: {e}')
+        return [], 'search_failed'
+
+    structure_ids = []
+    for item in (result or []):
+        structure_ids.extend(getattr(item, 'structure', None) or [])
+
+    if not structure_ids:
+        cache.set(cache_key, [], STRUCTURES_CACHE_TIMEOUT)
+        return [], 'none_found'
+
+    # Names already in the ledger cost nothing; the rest are asked for once.
+    from .models import MiningLedgerEntry
+
+    known = dict(
+        MiningLedgerEntry.objects
+        .filter(solar_system_id__in=structure_ids)
+        .exclude(solar_system_name='')
+        .values_list('solar_system_id', 'solar_system_name')
+    )
+
+    names = []
+    for sid in structure_ids:
+        if sid in known:
+            names.append(known[sid])
+            continue
+        try:
+            res = esi.client.Universe.GetUniverseStructuresStructureId(
+                structure_id=sid, token=token
+            ).results()
+            if res:
+                names.append(res[0].name)
+        except Exception:
+            # No docking access to this one, so no name — skipping is right,
+            # since a structure the officer cannot identify is not a useful
+            # thing to offer them.
+            continue
+
+    names = sorted(set(names))
+    cache.set(cache_key, names, STRUCTURES_CACHE_TIMEOUT)
+    return names, None
+
+
+def api_structures_for_system(request):
+    """
+    GET /miningtax/api/system-structures/?system=P9F-ZG
+    Returns {"structures": [...], "reason": null}
+
+    Uses the officer's own structure access, so it needs no corporation role —
+    the corp endpoints do, which is why they come back empty for a regular
+    member however much they can see in the client.
+    """
+    from .views import has_full_officer_access
+
+    if not request.user.is_authenticated or not has_full_officer_access(request.user):
+        return JsonResponse({'error': 'forbidden'}, status=403)
+
+    system_name = (request.GET.get('system') or '').strip()
+    if len(system_name) < 3:
+        # ESI rejects shorter searches outright.
+        return JsonResponse({'structures': [], 'reason': None})
+
+    token = _search_token_for(request.user)
+    names, reason = get_structures_in_system(system_name, token)
+    return JsonResponse({'structures': names, 'reason': reason})

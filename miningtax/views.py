@@ -518,13 +518,40 @@ def settings_view(request):
     )
     observed_lower = {n.strip().lower(): n for n in observed_structures}
 
+    # Structures ESI has already told us about for a system, read from the cache
+    # the structure search fills. A moon may perfectly well name a structure
+    # nobody has mined at yet — that is a normal state, not a mistake, and
+    # flagging it as broken was wrong. Only the cache is consulted, never ESI
+    # itself: this runs on every settings page load, and a warning is not worth
+    # an API round trip per system.
+    from django.core.cache import cache
+
+    def _known_for_system(system_name):
+        if not system_name:
+            return None
+        cached = cache.get(f'miningtax:sys_structures:{system_name.strip().lower()}')
+        if cached is None:
+            return None
+        return {n.strip().lower() for n in cached}
+
     stale_moons = []
     for moon in AllianceMoon.objects.filter(is_tax_free=True):
         if not moon.structure_name:
             # No structure set at all — falls back to matching on the system,
             # which is loose but not broken, so it isn't flagged here.
             continue
-        if moon.structure_name.strip().lower() in observed_lower:
+
+        configured = moon.structure_name.strip().lower()
+        if configured in observed_lower:
+            continue
+
+        known = _known_for_system(moon.solar_system_name)
+        if known is None:
+            # Nothing cached for that system, so there is no way to tell an
+            # unmined structure from a mistyped one. Saying nothing beats
+            # claiming the exemption is broken when it may well be fine.
+            continue
+        if configured in known:
             continue
 
         # Offer the closest observed name as a hint. Deliberately only a hint:
@@ -547,20 +574,6 @@ def settings_view(request):
 
     sov_systems = SovSystem.objects.order_by('system_name')
 
-    # Corporations offered in the structure-corp picker on the moon forms. Scoped
-    # to the officer's own alliance(s) by default so the list stays short, and
-    # each carries its real EVE alliance_id so the alliance filter can narrow it
-    # client-side just like the other corp dropdowns.
-    from allianceauth.eveonline.models import EveCorporationInfo
-    structure_corps = []
-    for corp in EveCorporationInfo.objects.select_related('alliance').order_by('corporation_name'):
-        if alliance_ids and (not corp.alliance_id or corp.alliance.alliance_id not in alliance_ids):
-            continue
-        structure_corps.append({
-            'corporation_id': corp.corporation_id,
-            'corporation_name': corp.corporation_name,
-            'alliance_eve_id': corp.alliance.alliance_id if corp.alliance_id else '',
-        })
     # Shown in the Sovereignty tab so officers can tell at a glance whether the
     # sov cache is populated — without needing shell access on a live server.
     sov_last_sync = SovSystem.objects.order_by('-updated_at').values_list(
@@ -584,7 +597,6 @@ def settings_view(request):
         'categories_without_rate': categories_without_rate,
         'ore_uncategorized': ore_uncategorized,
         'sov_systems': sov_systems,
-        'structure_corps': structure_corps,
         'sov_last_sync': sov_last_sync,
         'tax_exemptions': tax_exemptions,
         'exemption_form': TaxExemptionForm(alliance_ids=alliance_ids),

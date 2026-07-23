@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.3**
+**Version 0.10.4**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -262,11 +262,16 @@ Systems tab first, otherwise the dropdown stays empty.
 **Moons** are fetched from ESI for the chosen system and cached for 30 days —
 the first pick of a system takes a moment, everything after that is instant.
 
-**Structures** come from the corp's mining observers, which covers every moon
-drill the corp owns rather than only the ones already seen in mining data. ESI
-gates this behind an **in-game role** (Accountant or Director) on top of the
-`esi-industry.read_corporation_mining.v1` scope, so it works only where a member
-of that corp holds one. All available tokens for the corp are tried before
+**Structures** follow the chosen solar system: picking it searches for
+structures the officer can dock at, which needs `esi-search.search_structures.v1`
+and no corporation role. Names already seen in mining data remain available as a
+fallback, so the field stays usable if the search returns nothing.
+
+Earlier versions also offered a structure-corp picker, listing what a corporation
+owns regardless of docking access. It is gone: every corp endpoint ESI provides
+for this is gated behind an in-game role (Accountant or Director), so for anyone
+without one — which is most officers — it reliably returned nothing while
+competing with the system search for the same field. All available tokens for the corp are tried before
 giving up, and the dropdown states which of the possible causes applies —
 missing token, missing role, no structures, or an ESI error — rather than simply
 showing nothing. Structure names already seen in mining data remain available

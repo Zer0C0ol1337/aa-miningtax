@@ -50,4 +50,5 @@ urlpatterns = [
     # JSON endpoint feeding the dependent moon dropdown in the Settings UI
     path('api/moons/', api_views.api_moons_for_system, name='api_moons_for_system'),
     path('api/structures/', api_views.api_structures_for_corp, name='api_structures_for_corp'),
+    path('api/system-structures/', api_views.api_structures_for_system, name='api_structures_for_system'),
 ]

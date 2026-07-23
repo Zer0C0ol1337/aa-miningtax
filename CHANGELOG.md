@@ -1,6 +1,21 @@
 # Changelog
 
 
+## [0.10.4] - 2026-07-23
+
+Follow-up to 0.10.3, all of it from using it on a live install.
+
+### Added
+- **Structures are found by solar system, using the officer's own access.** Choosing the system a moon sits in fills the structure list by searching for structures that officer can dock at — which needs no corporation role, unlike every corp endpoint ESI offers. That is why the structure-corp picker returned nothing for members who could see those structures perfectly well in the client. Requires `esi-search.search_structures.v1`; without it the list falls back to names already seen in mining data
+
+### Fixed
+- **Choosing a structure corp emptied the structure list instead of extending it.** The picker replaced the field's contents, so selecting a corporation ESI would not answer for left nothing selectable, discarding the names already gathered from mining data. Picking a corp was worse than leaving the field alone
+- **Ore that eveuniverse does not know stayed at the Default rate.** Classification relied on eveuniverse alone, so ore added by an expansion — or any ore where eveuniverse is not installed — could not be categorised however often the import ran. The type's group comes from ESI now when eveuniverse cannot answer, which also covers ore outside the Asteroid category the bulk import walks. A type matching no rule is logged with its name and group, so the missing rule can be written rather than guessed
+- **A correctly configured moon was reported as broken if nobody had mined there yet.** The check compared the structure name against mining data alone. Structures now come from EVE's search, so naming one before any ore has been pulled from it is ordinary rather than a mistake — structures EVE reports for the system count as well, and where nothing is cached for a system no warning is given, since an unmined structure and a mistyped one cannot be told apart there
+
+### Removed
+- **The structure-corp picker.** Two controls filled the same field from different sources and overwrote one another, so which structures appeared depended on whichever had been touched last. The corp one could not work for most officers in any case, being gated behind an in-game role. Structures follow the solar system now, with mining data as the fallback — one control, one source
+
 ## [0.10.3] - 2026-07-23
 
 ### Added
