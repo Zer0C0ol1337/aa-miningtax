@@ -137,6 +137,20 @@ def _type_and_group_from_esi(type_id):
         return '', ''
 
 
+def forget_unclassifiable_types():
+    """
+    Drops the record of which types could not be classified.
+
+    Called whenever the rules change or the ore list is reimported. Without it a
+    newly written rule would sit idle for up to a day on exactly the ore it was
+    written for, which is the one case where someone is watching for it to work.
+    """
+    from .models import MiningLedgerEntry
+
+    type_ids = MiningLedgerEntry.objects.values_list('type_id', flat=True).distinct()
+    cache.delete_many([f'miningtax:unclassifiable:{t}' for t in type_ids])
+
+
 def get_ore_category(type_id):
     """
     Category for an ore type. The OreCategory table wins, so anything an officer
@@ -164,6 +178,16 @@ def get_ore_category(type_id):
         # eveuniverse either isn't installed or doesn't know this type. Asking
         # ESI covers ore outside the Asteroid category the bulk import walks,
         # and ore added after eveuniverse was last loaded.
+        #
+        # The negative answer is remembered as well. This runs once per ledger
+        # entry while a page renders, so without it every unclassifiable type
+        # cost two ESI calls on every single view — the ore is not going to
+        # change group in the meantime, and a day is soon enough to notice a
+        # new rule.
+        miss_key = f'miningtax:unclassifiable:{type_id}'
+        if cache.get(miss_key):
+            return 'Default'
+
         name, group_name = _type_and_group_from_esi(type_id)
 
     derived = category_from_rules(name, group_name) or classify_group_name(group_name)
@@ -172,6 +196,7 @@ def get_ore_category(type_id):
             f'Type {type_id} ("{name or "unknown"}", group "{group_name or "unknown"}") '
             f'matches no category rule, taxed at the Default rate'
         )
+        cache.set(f'miningtax:unclassifiable:{type_id}', True, 60 * 60 * 24)
         return 'Default'
 
     OreCategory.objects.update_or_create(

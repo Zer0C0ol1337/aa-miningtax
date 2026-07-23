@@ -101,6 +101,19 @@ class OreCategoryRuleAdmin(admin.ModelAdmin):
     list_filter = ('active', 'match_field', 'category')
     search_fields = ('contains', 'category', 'note')
 
+    # Ein Typ, der bisher nicht einzuordnen war, wird nicht erneut bei ESI
+    # erfragt — bis eine neue Regel genau das ändern soll. Deshalb hier
+    # verwerfen, sonst wirkt die Regel erst am nächsten Tag.
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        from .billing import forget_unclassifiable_types
+        forget_unclassifiable_types()
+
+    def delete_model(self, request, obj):
+        super().delete_model(request, obj)
+        from .billing import forget_unclassifiable_types
+        forget_unclassifiable_types()
+
 
 # Legt fest, welche Charaktere überhaupt besteuert werden. Leere Tabelle =
 # alles wird besteuert (Verhalten vor Einführung der Reichweite).

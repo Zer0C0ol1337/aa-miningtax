@@ -1093,6 +1093,11 @@ def sync_ore_categories():
             f'{", ".join(sorted(fallback_groups))}'
         )
 
+    # A type that could not be classified before may well be classifiable now,
+    # so the record of past failures is dropped rather than left to expire.
+    from .billing import forget_unclassifiable_types
+    forget_unclassifiable_types()
+
     logger.info(
         f'Ore import complete — {imported} new, {updated} updated, '
         f'{skipped} locked and left unchanged'

@@ -725,6 +725,7 @@ def settings_delete_treasury(request, pk):
 def settings_register_corp(request):
     if request.method == 'POST':
         from allianceauth.eveonline.models import EveCorporationInfo
+        from .tasks import register_corporation_task
 
         raw_id = request.POST.get('corporation_id', '').strip()
         try:
@@ -733,17 +734,19 @@ def settings_register_corp(request):
             messages.error(request, f'❌ "{raw_id}" is not a valid corporation ID.')
             return redirect('miningtax:settings')
 
+        # Answered here rather than in the task: it costs one indexed lookup and
+        # saves telling someone to go and watch a monitor for something that has
+        # already happened.
         if EveCorporationInfo.objects.filter(corporation_id=corp_id).exists():
             messages.info(request, 'ℹ️ This corporation is already registered.')
             return redirect('miningtax:settings')
 
-        try:
-            corp = EveCorporationInfo.objects.create_corporation(corporation_id=corp_id)
-            logger.info(f'{request.user.username}: registered corporation {corp.corporation_name} ({corp_id}) via ESI')
-            messages.success(request, f'✅ {corp.corporation_name} registered and now available in the dropdowns.')
-        except Exception as e:
-            logger.warning(f'{request.user.username}: failed to register corporation {corp_id}: {e}')
-            messages.error(request, f'❌ Could not fetch corporation {corp_id}: {e}')
+        register_corporation_task.delay(corp_id, requested_by=request.user.username)
+        messages.success(
+            request,
+            f'✅ Registering corporation {corp_id} in the background — refresh '
+            f'shortly, or follow it in the task monitor.'
+        )
 
     return redirect('miningtax:settings')
 
@@ -751,8 +754,7 @@ def settings_register_corp(request):
 @check_access(has_full_officer_access)
 def settings_register_alliance_corps(request):
     if request.method == 'POST':
-        from allianceauth.eveonline.models import EveCorporationInfo
-        from .services import _get_esi_client
+        from .tasks import register_alliance_corps_task
 
         raw_id = request.POST.get('alliance_id', '').strip()
         try:
@@ -761,39 +763,12 @@ def settings_register_alliance_corps(request):
             messages.error(request, f'❌ "{raw_id}" is not a valid alliance ID.')
             return redirect('miningtax:settings')
 
-        try:
-            esi = _get_esi_client()
-            corp_ids = esi.client.Alliance.GetAlliancesAllianceIdCorporations(
-                alliance_id=alliance_id
-            ).results()
-        except Exception as e:
-            logger.warning(f'{request.user.username}: failed to fetch corp list for alliance {alliance_id}: {e}')
-            messages.error(request, f'❌ Could not fetch corporations for this alliance: {e}')
-            return redirect('miningtax:settings')
-
-        registered = 0
-        already_present = 0
-        failed = 0
-
-        for corp_id in corp_ids:
-            if EveCorporationInfo.objects.filter(corporation_id=corp_id).exists():
-                already_present += 1
-                continue
-            try:
-                EveCorporationInfo.objects.create_corporation(corporation_id=corp_id)
-                registered += 1
-            except Exception as e:
-                logger.warning(f'{request.user.username}: failed to register corp {corp_id} from alliance {alliance_id}: {e}')
-                failed += 1
-
-        logger.info(
-            f'{request.user.username}: registered alliance {alliance_id} corps — '
-            f'{registered} new, {already_present} already present, {failed} failed'
-        )
+        register_alliance_corps_task.delay(alliance_id, requested_by=request.user.username)
         messages.success(
             request,
-            f'✅ {registered} new corporation(s) registered, {already_present} already present'
-            + (f', {failed} failed' if failed else '') + '.'
+            '✅ Registering the alliance\'s corporations in the background. It takes '
+            'one request per corporation, so give it a moment — the task monitor '
+            'shows how it went.'
         )
 
     return redirect('miningtax:settings')

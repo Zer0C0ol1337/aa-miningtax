@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.4**
+**Version 0.10.6**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -42,6 +42,27 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 | `allianceauth-corptools` | Recommended | Mining data from DB instead of ESI — significantly fewer API calls; required for the automatic payment check (corp wallet scope) |
 
 Without Corptools the plugin falls back to its own ESI sync for mining data. The **automatic payment verification** feature specifically requires a director/accountant character of the treasury corp logged in via Corptools' Corporation Audit flow with the `esi-wallet.read_corporation_wallets.v1` scope — Character Audit alone does not grant this scope.
+
+---
+
+## Data from Other Apps
+
+ESI is asked only for what no installed app already holds. Where an app is
+present, it is preferred:
+
+| App | Used for | Why |
+|---|---|---|
+| `allianceauth-corptools` | Mining ledgers | Reads them from its database instead of ESI, cutting the API calls this plugin makes by far the largest margin available |
+| `django-eveuniverse` | Ore names, reprocessing recipes | Local, authoritative, and the only source for the recipes that refined-value pricing needs |
+
+**`aa-structures` is not integrated.** It could supply structure names without
+an ESI call, and on paper that fits. It is not used because neither this
+plugin's authors nor its only production install run it, so the integration
+could not be exercised — and the first person to install `aa-structures` would
+have discovered that on their own moon configuration. Structure names come from
+mining data and from EVE's structure search instead, both of which are tested
+daily here. If you run `aa-structures` and want it used, say so on the issue
+tracker; it is a small change once someone can verify it works.
 
 ---
 

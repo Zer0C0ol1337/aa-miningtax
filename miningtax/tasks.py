@@ -176,3 +176,69 @@ def update_prices_task(requested_by=None):
     result = f'{updated} entrie(s) priced'
     logger.info(f'Price update by {requested_by or "unknown"}: {result}')
     return result
+
+
+@shared_task
+def register_corporation_task(corporation_id, requested_by=None):
+    """
+    Registers one corporation with Alliance Auth. Backs the Settings button.
+
+    A task rather than a direct call for the same reason as the rest: work that
+    talks to ESI belongs off the web request, and an action nobody can see
+    afterwards is an action nobody can troubleshoot.
+    """
+    from allianceauth.eveonline.models import EveCorporationInfo
+
+    if EveCorporationInfo.objects.filter(corporation_id=corporation_id).exists():
+        return 'already registered'
+
+    try:
+        corp = EveCorporationInfo.objects.create_corporation(corporation_id=corporation_id)
+    except Exception as e:
+        logger.warning(f'Could not register corporation {corporation_id}: {e}')
+        return f'failed: {e}'
+
+    logger.info(f'Corporation {corp.corporation_name} ({corporation_id}) registered by {requested_by or "unknown"}')
+    return f'registered {corp.corporation_name}'
+
+
+@shared_task
+def register_alliance_corps_task(alliance_id, requested_by=None):
+    """
+    Registers every corporation of an alliance.
+
+    This is why the registration actions became tasks at all: one ESI call
+    fetches the corp list, then Alliance Auth makes another for each corp it
+    does not know. An alliance of fifty corps is fifty-one requests, which is
+    well past what a web request should be doing.
+    """
+    from allianceauth.eveonline.models import EveCorporationInfo
+    from .services import _get_esi_client
+
+    try:
+        esi = _get_esi_client()
+        corp_ids = esi.client.Alliance.GetAlliancesAllianceIdCorporations(
+            alliance_id=alliance_id
+        ).results()
+    except Exception as e:
+        logger.warning(f'Could not fetch corp list for alliance {alliance_id}: {e}')
+        return f'failed: {e}'
+
+    registered = 0
+    already_present = 0
+    failed = 0
+
+    for corp_id in (corp_ids or []):
+        if EveCorporationInfo.objects.filter(corporation_id=corp_id).exists():
+            already_present += 1
+            continue
+        try:
+            EveCorporationInfo.objects.create_corporation(corporation_id=corp_id)
+            registered += 1
+        except Exception as e:
+            logger.warning(f'Could not register corp {corp_id} of alliance {alliance_id}: {e}')
+            failed += 1
+
+    result = f'{registered} new, {already_present} already present, {failed} failed'
+    logger.info(f'Alliance {alliance_id} corps registered by {requested_by or "unknown"}: {result}')
+    return result

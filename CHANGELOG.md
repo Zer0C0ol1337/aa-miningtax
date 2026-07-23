@@ -1,6 +1,25 @@
 # Changelog
 
 
+## [0.10.6] - 2026-07-23
+
+### Documentation
+- The README now states which other apps' data is used in place of ESI, and why `aa-structures` is not among them — it is neither run by the authors nor by the only production install, so the integration could not be tested, and shipping it untested would have made whoever installed that app the first person to find out
+
+### Fixed
+- **Ore that could not be classified was looked up at ESI on every page render.** The lookup added in 0.10.4 remembered its successes but not its failures, so a type nothing could categorise cost two ESI calls each time a ledger was drawn — for every such type, for every viewer. The negative answer is remembered for a day now, and dropped as soon as the rules change or the ore list is reimported, so a rule written for exactly that ore takes effect at once rather than after the cache expires
+
+
+## [0.10.5] - 2026-07-23
+
+### Changed
+- **Registering corporations runs as a Celery task.** Registering a whole alliance took one ESI call for the corp list and another for every corp Alliance Auth did not already know — fifty-one requests for an alliance of fifty, all inside a web request that had to finish before the page came back. Both the single-corp and whole-alliance buttons dispatch tasks now, tagged with the officer who pressed them, and appear in the task monitor with the rest
+
+### Notes
+- Every action that talks to ESI is now a task. What remains synchronous is either a plain database write, where the officer needs to see the result on the page they are looking at, or a download, which cannot be a background job and still be a download
+- `Mark as Paid` recalculates the month's billing before writing the record. That is the same work the page it sits on already does to render, so it costs no more than the view the officer just loaded
+
+
 ## [0.10.4] - 2026-07-23
 
 Follow-up to 0.10.3, all of it from using it on a live install.
