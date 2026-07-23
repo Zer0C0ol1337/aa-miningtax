@@ -1,7 +1,7 @@
 from django import forms
 from .models import (
     TaxRate, MoonRental, AllianceMoon, TreasuryConfig, SovFilterConfig,
-    JaniceConfig, TaxExemption,
+    JaniceConfig, TaxExemption, TaxableScope,
 )
 from allianceauth.eveonline.models import EveCharacter
 from allianceauth.eveonline.models import EveCorporationInfo
@@ -248,4 +248,55 @@ class TaxExemptionForm(forms.ModelForm):
         if character:
             cleaned['corporation'] = None
 
+        return cleaned
+
+
+# Defines which characters are taxed at all, by alliance or corporation.
+class TaxableScopeForm(forms.ModelForm):
+    class Meta:
+        model = TaxableScope
+        fields = ['alliance', 'corporation', 'note']
+        widgets = {
+            'note': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'e.g. main alliance, renter corp...',
+            }),
+        }
+
+    def __init__(self, *args, alliance_ids=None, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        from allianceauth.eveonline.models import EveAllianceInfo
+
+        alliances = EveAllianceInfo.objects.order_by('alliance_name')
+        self.fields['alliance'].queryset = alliances
+        self.fields['alliance'].widget = forms.Select(
+            attrs={'class': 'form-control'},
+            choices=[('', '— None —')] + [(a.pk, a.alliance_name) for a in alliances],
+        )
+        self.fields['alliance'].required = False
+
+        corps = EveCorporationInfo.objects.order_by('corporation_name')
+        self.fields['corporation'].queryset = corps
+        self.fields['corporation'].widget = forms.Select(
+            attrs={'class': 'form-control'},
+            choices=[('', '— None —')] + [(c.pk, c.corporation_name) for c in corps],
+        )
+        self.fields['corporation'].required = False
+
+    def clean(self):
+        cleaned = super().clean()
+        alliance = cleaned.get('alliance')
+        corporation = cleaned.get('corporation')
+
+        # Exactly one, because the two mean different things: an alliance entry
+        # follows corps in and out of it, a corp entry does not. Allowing both
+        # on one row would leave which of those applied ambiguous.
+        if not alliance and not corporation:
+            raise forms.ValidationError('Select an alliance or a corporation.')
+        if alliance and corporation:
+            raise forms.ValidationError(
+                'Select only one: an alliance covers all its corps, '
+                'a corporation entry is for corps outside it.'
+            )
         return cleaned

@@ -1,12 +1,13 @@
 import logging
 from decimal import Decimal
 
+from django.core.cache import cache
 from django.db.models import Sum
 from django.utils import timezone
 
 from .models import (
     OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental,
-    AllianceBillingRecord, TaxExemption, OreCategoryRule,
+    AllianceBillingRecord, TaxExemption, OreCategoryRule, TaxableScope,
 )
 from .services import STRUCTURE_ID_THRESHOLD
 
@@ -215,6 +216,62 @@ def _get_main_character(character):
         return None
 
 
+SCOPE_CACHE_KEY = 'miningtax:taxable_scope'
+
+
+def _taxable_scope():
+    """
+    The alliances and corporations that are taxed, as {alliances, corps} of EVE
+    IDs, cached briefly since billing consults it once per ledger entry.
+
+    'active' is False when nothing is configured, which taxes everything — the
+    behaviour every install had before scopes existed, so upgrading changes
+    nothing until someone sets one.
+    """
+    data = cache.get(SCOPE_CACHE_KEY)
+    if data is not None:
+        return data
+
+    rows = TaxableScope.objects.select_related('alliance', 'corporation').all()
+    alliances = {r.alliance.alliance_id for r in rows if r.alliance_id}
+    corps = {r.corporation.corporation_id for r in rows if r.corporation_id}
+
+    data = {
+        'active': bool(alliances or corps),
+        'alliances': alliances,
+        'corps': corps,
+    }
+    cache.set(SCOPE_CACHE_KEY, data, 300)
+    return data
+
+
+def is_outside_taxable_scope(entry):
+    """
+    True when the character who mined this is somewhere the alliance does not
+    tax — a high-sec alt, a trade character, a corp outside the alliance.
+
+    Judged on the character's *current* corporation, not where they were at the
+    time. Mining history is not stamped with a corporation, so present
+    membership is the only thing available; someone who leaves the alliance
+    therefore takes their unpaid billing with them, which is the same outcome as
+    leaving without paying.
+    """
+    scope = _taxable_scope()
+    if not scope['active']:
+        return False
+
+    character = entry.character
+    if character.corporation_id in scope['corps']:
+        return False
+
+    # alliance_id on EveCharacter is the real EVE alliance ID, which is what the
+    # scope stores — no lookup through EveAllianceInfo needed.
+    if character.alliance_id and character.alliance_id in scope['alliances']:
+        return False
+
+    return True
+
+
 def is_tax_exempt(entry):
     # Exemptions are granted per MAIN character (or per corporation), never per
     # alt: exempting a main automatically covers every alt that main owns in
@@ -255,7 +312,10 @@ def calculate_entry_tax(entry, corporation=None):
             category = 'Gas'
 
     excluded = (
-        is_tax_exempt(entry)
+        # Scope first: mining outside the alliance's reach is not a question of
+        # ore category or exemptions, it simply isn't ours to tax.
+        is_outside_taxable_scope(entry)
+        or is_tax_exempt(entry)
         or is_excluded_by_fleet_session(entry, category)
         or is_excluded_by_alliance_moon(entry)
         or is_excluded_by_moon_rental(entry, corporation)

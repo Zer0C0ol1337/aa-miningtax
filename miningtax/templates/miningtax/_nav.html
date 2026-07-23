@@ -1,0 +1,35 @@
+{% load i18n %}
+{% comment %}
+  The plugin's own navigation, included by every page.
+
+  Each page used to carry its own hand-assembled set of links, which drifted:
+  Settings offered no way to the ledger, the pilot view knew only where it came
+  from, and adding a page meant remembering to link it from three others.
+
+  Permissions are read from `perms` rather than passed in by each view, so the
+  bar works wherever it is included without a matching change in Python.
+  Superusers are covered automatically, since has_perm answers True for them.
+
+  Callers pass `active` to mark the current page: {% include "…/_nav.html" with active="settings" %}
+{% endcomment %}
+
+<div class="d-flex gap-2 flex-wrap mb-3">
+  <a href="{% url 'miningtax:dashboard' %}"
+     class="btn btn-sm {% if active == 'dashboard' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+    ⛏️ {% trans "My Mining" %}
+  </a>
+
+  {% if perms.miningtax.corp_billing or perms.miningtax.mining_officer %}
+  <a href="{% url 'miningtax:alliance_overview' %}"
+     class="btn btn-sm {% if active == 'billing' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+    🏛️ {% trans "Billing" %}
+  </a>
+  {% endif %}
+
+  {% if perms.miningtax.mining_officer %}
+  <a href="{% url 'miningtax:settings' %}"
+     class="btn btn-sm {% if active == 'settings' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+    ⚙️ {% trans "Settings" %}
+  </a>
+  {% endif %}
+</div>

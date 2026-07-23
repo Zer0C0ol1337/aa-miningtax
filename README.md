@@ -10,6 +10,7 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 - **Complete ore list, maintained by ESI** — every mineable type is imported and classified by its EVE group, so a newly introduced ore is never taxed at the Default rate unnoticed. The Settings page reports how many mined types still lack a category
 - **Category rules** — assign ore to a category by name, ahead of EVE's own grouping: abyssal ore and Prismaticite sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches. A category can also be locked so the automatic import leaves it alone
 - **Refined-value pricing (optional)** — value ore by the market value of the minerals it reprocesses into (Janice split price × eveuniverse reprocessing recipes), instead of the manipulable raw ore price; falls back to ESI reference prices when disabled or unreachable
+- **Taxable scope** — decide which alliances and corporations are taxed at all, so a player's high-sec alts and out-of-alliance characters stay off the bill even though their mining is visible
 - **Tax exemptions** — exempt a whole corporation, or a single player by their main character; alts on the same Alliance Auth account are covered automatically, including ones registered later. Exemptions can be paused instead of deleted
 - **Moon rentals** — corps renting a moon pay a flat monthly fee; mining there is tax-free for them
 - **Tax-free event moons** — alliance moons can be marked tax-free, optionally scoped to a specific structure when several share one solar system
@@ -350,13 +351,24 @@ corporation.
 
 ## Celery Beat
 
-For daily automatic sync in `local.py`:
+The daily sync registers itself. On the first `migrate` after installing, a
+periodic task appears under **Admin → Periodic Tasks** as *miningtax: daily
+mining sync*, set to 02:00, and it is not touched again afterwards — change the
+time, rename it or untick *enabled* and the plugin leaves your edit alone.
+
+Deleting it is the one thing that does not stick: it is recreated on the next
+`migrate`, since a missing schedule looks exactly like a fresh install. Untick
+*enabled* to turn the sync off for good.
+
+Earlier versions expected an entry in `local.py` instead. That still works and
+takes precedence if present, but it is no longer needed — and forgetting it
+produced no error at all, just a plugin that quietly never synced:
 
 ```python
 from celery.schedules import crontab
 
 CELERYBEAT_SCHEDULE['miningtax_daily_sync'] = {
-    'task': 'miningtax.tasks.daily_mining_sync',
+    'task': 'miningtax.tasks.daily_mining_sync_task',
     'schedule': crontab(hour=2, minute=0),
 }
 ```

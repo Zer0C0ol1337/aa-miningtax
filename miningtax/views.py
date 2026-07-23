@@ -14,10 +14,13 @@ from .models import (
     TreasuryConfig, SovFilterConfig, JaniceConfig, TaxExemption, SovSystem,
 )
 from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
-from .services import sync_character_mining, update_market_prices, sync_all_corp_observers
+from .services import (
+    sync_character_mining, update_market_prices, sync_all_corp_observers,
+    STRUCTURE_ID_THRESHOLD,
+)
 from .forms import (
     TaxRateForm, MoonRentalForm, AllianceMoonForm, TreasuryConfigForm,
-    SovFilterConfigForm, JaniceConfigForm, TaxExemptionForm,
+    SovFilterConfigForm, JaniceConfigForm, TaxExemptionForm, TaxableScopeForm,
 )
 
 logger = logging.getLogger(__name__)
@@ -460,7 +463,15 @@ def settings_view(request):
         MiningLedgerEntry.objects.values_list('type_id', flat=True).distinct()
     )
     known_type_ids = set(OreCategory.objects.values_list('type_id', flat=True))
-    ore_uncategorized = len(mined_type_ids - known_type_ids)
+    uncategorized_ids = mined_type_ids - known_type_ids
+    ore_uncategorized = len(uncategorized_ids)
+    # Named as well as counted: a count says something is wrong, the names say
+    # whether it matters and what rule is missing.
+    uncategorized_names = list(
+        MiningLedgerEntry.objects.filter(type_id__in=uncategorized_ids)
+        .exclude(type_name='')
+        .values_list('type_name', flat=True).distinct()[:20]
+    )
 
     # Categories that ore can end up in but which have no rate yet — those are
     # silently billed at the Default rate, so they're surfaced for one-click
@@ -473,6 +484,66 @@ def settings_view(request):
     )
     rated_categories = set(TaxRate.objects.values_list('ore_category', flat=True))
     categories_without_rate = sorted(c for c in used_categories - rated_categories if c)
+
+    # Ledger entries whose location never resolved. Surfaced because the effect
+    # is invisible otherwise: a tax-free moon cannot be matched by a placeholder
+    # name, so its ore is taxed and nothing says why.
+    from django.db.models import Q
+    unresolved_locations = MiningLedgerEntry.objects.filter(
+        Q(solar_system_name__startswith='Unknown (')
+        | Q(solar_system_name__startswith='Structure (')
+    ).count()
+
+    # Entries that carry no price. They contribute nothing to anyone's bill,
+    # however much was mined, so an unnoticed pricing failure quietly
+    # under-charges the whole alliance.
+    unpriced_entries = MiningLedgerEntry.objects.filter(price_per_unit=0).count()
+    unpriced_ore_names = list(
+        MiningLedgerEntry.objects.filter(price_per_unit=0)
+        .exclude(type_name='')
+        .values_list('type_name', flat=True).distinct()[:10]
+    )
+
+    # Configured moons whose structure name matches nothing the ledger has seen.
+    # A moon in this state is simply inactive: the exemption compares the
+    # structure name literally, so a name that no entry carries can never match
+    # and the ore is taxed. This happened wholesale when the structure field
+    # moved from free text to a dropdown — hand-typed names rarely agree
+    # character for character with what ESI reports.
+    observed_structures = set(
+        MiningLedgerEntry.objects
+        .filter(solar_system_id__gt=STRUCTURE_ID_THRESHOLD)
+        .exclude(solar_system_name='')
+        .values_list('solar_system_name', flat=True).distinct()
+    )
+    observed_lower = {n.strip().lower(): n for n in observed_structures}
+
+    stale_moons = []
+    for moon in AllianceMoon.objects.filter(is_tax_free=True):
+        if not moon.structure_name:
+            # No structure set at all — falls back to matching on the system,
+            # which is loose but not broken, so it isn't flagged here.
+            continue
+        if moon.structure_name.strip().lower() in observed_lower:
+            continue
+
+        # Offer the closest observed name as a hint. Deliberately only a hint:
+        # applying it automatically could exempt the wrong structure, which is
+        # a worse failure than the one being fixed — it loses revenue silently
+        # instead of visibly over-charging.
+        import difflib
+        close = difflib.get_close_matches(
+            moon.structure_name.strip().lower(), list(observed_lower.keys()), n=1, cutoff=0.5
+        )
+        stale_moons.append({
+            'moon': moon,
+            'suggestion': observed_lower[close[0]] if close else None,
+        })
+
+    from .models import TaxableScope
+    taxable_scopes = TaxableScope.objects.select_related(
+        'alliance', 'corporation'
+    ).order_by('alliance__alliance_name', 'corporation__corporation_name')
 
     sov_systems = SovSystem.objects.order_by('system_name')
 
@@ -503,6 +574,13 @@ def settings_view(request):
     context = {
         'tax_forms': tax_forms,
         'ore_type_count': ore_type_count,
+        'uncategorized_names': uncategorized_names,
+        'unresolved_locations': unresolved_locations,
+        'taxable_scopes': taxable_scopes,
+        'scope_form': TaxableScopeForm(alliance_ids=alliance_ids),
+        'stale_moons': stale_moons,
+        'unpriced_entries': unpriced_entries,
+        'unpriced_ore_names': unpriced_ore_names,
         'categories_without_rate': categories_without_rate,
         'ore_uncategorized': ore_uncategorized,
         'sov_systems': sov_systems,
@@ -736,12 +814,15 @@ def settings_delete_sov_filter(request, pk):
 
 @check_access(has_full_officer_access)
 def settings_sync_sov_now(request):
-    from .services import sync_sov_systems
+    from .tasks import sync_sov_systems_task
 
     logger.info(f'{request.user.username}: manual sovereignty sync triggered')
-    # Explicit officer action, so the daily ETag-recovery limit is lifted here.
-    count = sync_sov_systems(force_recovery=True)
-    messages.success(request, f'✅ Sovereignty sync complete — {count} system(s) tracked.')
+    sync_sov_systems_task.delay(requested_by=request.user.username)
+    messages.success(
+        request,
+        '✅ Sovereignty sync started. It runs in the background — '
+        'refresh shortly, or watch it in the task monitor.'
+    )
     return redirect('miningtax:settings')
 
 
@@ -954,19 +1035,14 @@ def settings_sync_ore_categories(request):
     if request.method != 'POST':
         return redirect('miningtax:settings')
 
-    from .services import sync_ore_categories
+    from .tasks import sync_ore_categories_task
 
-    imported, updated = sync_ore_categories()
-    if imported or updated:
-        messages.success(
-            request,
-            f'✅ Ore list refreshed — {imported} new, {updated} updated.'
-        )
-    else:
-        messages.warning(
-            request,
-            '⚠️ No ore types imported. Check the server log for the ESI error.'
-        )
+    sync_ore_categories_task.delay(requested_by=request.user.username)
+    messages.success(
+        request,
+        '✅ Ore import started. It makes one request per ore group, so give it '
+        'a moment — refresh afterwards, or watch it in the task monitor.'
+    )
     return redirect('miningtax:settings')
 
 
@@ -1056,3 +1132,94 @@ def _add_character_url():
         except NoReverseMatch:
             continue
     return None
+
+
+@check_access(has_full_officer_access)
+def settings_repair_names(request):
+    """
+    Re-resolves ledger locations still showing a placeholder.
+
+    Exposed as a button because the consequence is easy to miss: a tax-free
+    moon whose structure name never resolved is silently taxed, and waiting for
+    the nightly run to correct it means a month of wrong invoices.
+    """
+    if request.method != 'POST':
+        return redirect('miningtax:settings')
+
+    from .tasks import repair_location_names_task
+
+    repair_location_names_task.delay(requested_by=request.user.username)
+    messages.success(
+        request,
+        '✅ Resolving location names in the background — refresh shortly, '
+        'or watch it in the task monitor.'
+    )
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_update_prices(request):
+    """Retries pricing for entries that still have none."""
+    if request.method != 'POST':
+        return redirect('miningtax:settings')
+
+    from .tasks import update_prices_task
+
+    update_prices_task.delay(requested_by=request.user.username)
+    messages.success(
+        request,
+        '✅ Pricing started in the background — refresh shortly, or watch it in '
+        'the task monitor. If nothing changes, the log names the ore types that '
+        'no source prices.'
+    )
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_add_scope(request):
+    """Adds an alliance or corporation to the taxable scope."""
+    if request.method == 'POST':
+        from .billing import SCOPE_CACHE_KEY
+        from django.core.cache import cache
+
+        form = TaxableScopeForm(request.POST, alliance_ids=_own_alliance_ids(request.user))
+        if form.is_valid():
+            scope = form.save()
+            cache.delete(SCOPE_CACHE_KEY)
+            logger.info(f'{request.user.username}: taxable scope added → {scope}')
+            messages.success(request, f'✅ Added to taxable scope: {scope}')
+        else:
+            error_text = '; '.join(str(e) for errors in form.errors.values() for e in errors)
+            messages.error(request, f'❌ {error_text}')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_delete_scope(request, pk):
+    """
+    Removes an entry from the taxable scope.
+
+    Removing the last one means everything becomes taxable again, including the
+    high-sec alts this exists to leave alone — so that case is called out
+    rather than left to be discovered on the next invoice.
+    """
+    from .models import TaxableScope
+    from .billing import SCOPE_CACHE_KEY
+    from django.core.cache import cache
+
+    scope = get_object_or_404(TaxableScope, pk=pk)
+    if request.method == 'POST':
+        label = str(scope)
+        scope.delete()
+        cache.delete(SCOPE_CACHE_KEY)
+        logger.info(f'{request.user.username}: taxable scope removed → {label}')
+
+        if not TaxableScope.objects.exists():
+            messages.warning(
+                request,
+                f'🗑️ Removed {label}. The scope is now empty, so every character '
+                f'is taxed again — including alts outside the alliance.'
+            )
+        else:
+            messages.success(request, f'🗑️ Removed from taxable scope: {label}')
+    return redirect('miningtax:settings')

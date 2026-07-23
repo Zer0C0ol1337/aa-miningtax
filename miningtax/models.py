@@ -320,3 +320,39 @@ class OreCategoryRule(models.Model):
 
     def __str__(self):
         return f'{self.get_match_field_display()} contains "{self.contains}" -> {self.category}'
+
+
+# Which characters are taxed at all, by where they are.
+#
+# A player's account routinely holds characters that have nothing to do with the
+# alliance: high-sec alts, trade characters, corps left behind. Their mining
+# still reaches the plugin through the personal ledger, and without a scope it
+# is billed like any other — the player is charged for ore mined somewhere the
+# alliance has no claim on.
+#
+# One row per alliance or corporation that IS taxable. An empty table taxes
+# everything, which is what installs upgrading from earlier versions get, so
+# nothing changes for them until someone decides otherwise.
+class TaxableScope(models.Model):
+    alliance = models.ForeignKey(
+        EveAllianceInfo, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='miningtax_scopes',
+        help_text='Tax every character in this alliance'
+    )
+    corporation = models.ForeignKey(
+        EveCorporationInfo, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='miningtax_scopes',
+        help_text='Tax every character in this corporation, whatever alliance it is in'
+    )
+    note = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        default_permissions = ()
+        verbose_name = 'taxable scope'
+
+    def __str__(self):
+        if self.alliance:
+            return f'Alliance: {self.alliance.alliance_name}'
+        if self.corporation:
+            return f'Corporation: {self.corporation.corporation_name}'
+        return 'Incomplete scope'

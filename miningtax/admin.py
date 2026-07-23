@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     General, OreCategory, TaxRate, MiningLedgerEntry, AllianceMoon,
     FleetSession, MoonRental, AllianceBillingRecord, TaxExemption,
-    OreCategoryRule
+    OreCategoryRule, TaxableScope
 )
 
 
@@ -100,3 +100,11 @@ class OreCategoryRuleAdmin(admin.ModelAdmin):
     list_editable = ('category', 'priority', 'active')
     list_filter = ('active', 'match_field', 'category')
     search_fields = ('contains', 'category', 'note')
+
+
+# Legt fest, welche Charaktere überhaupt besteuert werden. Leere Tabelle =
+# alles wird besteuert (Verhalten vor Einführung der Reichweite).
+@admin.register(TaxableScope)
+class TaxableScopeAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'alliance', 'corporation', 'note')
+    search_fields = ('alliance__alliance_name', 'corporation__corporation_name', 'note')

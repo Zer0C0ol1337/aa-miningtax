@@ -46,27 +46,19 @@
     </div>
     {% endif %}
 
+    {% include "miningtax/_nav.html" with active="dashboard" %}
+
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h1>⛏️ {% trans "Mining Tax" %} — {{ month }}</h1>
         <div class="d-flex gap-2">
-            {% if is_officer %}
-            <a href="{% url 'miningtax:alliance_overview' %}" class="btn btn-outline-secondary">
-                🏛️ {% trans "Alliance Billing" %}
-            </a>
-            {% endif %}
-            {% if is_full_officer %}
-            <a href="{% url 'miningtax:settings' %}" class="btn btn-outline-secondary">
-                ⚙️ {% trans "Settings" %}
-            </a>
-            {% endif %}
             <a href="{% url 'miningtax:export_my_ledger' %}?year={{ year }}&month={{ month_num }}"
-               class="btn btn-outline-secondary">
+               class="btn btn-sm btn-outline-secondary">
                 📄 {% trans "Export CSV" %}
             </a>
             {% if is_full_officer %}
             <form method="post" action="{% url 'miningtax:sync_now' %}">
                 {% csrf_token %}
-                <button type="submit" class="btn btn-outline-primary btn-sm">
+                <button type="submit" class="btn btn-sm btn-outline-primary">
                     🔄 {% trans "Sync Now" %}
                 </button>
             </form>

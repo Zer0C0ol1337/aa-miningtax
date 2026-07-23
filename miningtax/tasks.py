@@ -3,7 +3,10 @@ from datetime import date
 
 from celery import shared_task
 
-from .services import sync_all_characters, sync_all_corp_observers, update_market_prices
+from .services import (
+    sync_all_characters, sync_all_corp_observers, update_market_prices,
+    repair_unresolved_ledger_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Daily sync: personal ledgers + corp observer + market prices + sovereignty
 # + billing records + payment check
 @shared_task
-def daily_mining_sync():
+def daily_mining_sync_task():
     from .billing import save_billing_records_for_month
     from .payments import check_corp_payments
     from .services import sync_sov_systems, sync_ore_categories
@@ -25,6 +28,13 @@ def daily_mining_sync():
     # already be in place for the day being processed.
     synced_corps = sync_all_corp_observers()
     synced_chars = sync_all_characters()
+
+    # Before pricing: a location left as "Unknown (id)" by a failed lookup stays
+    # that way forever otherwise, and a tax-free moon whose structure name never
+    # resolved cannot be matched — so its ore is taxed with nothing on screen to
+    # explain it.
+    repaired = repair_unresolved_ledger_names()
+
     priced = update_market_prices()
     sov_systems = sync_sov_systems()
 
@@ -35,6 +45,7 @@ def daily_mining_sync():
     result = (
         f'{ore_new} new ore types, '
         f'{synced_chars} personal entries, '
+        f'{repaired} names repaired, '
         f'{synced_corps} corp observer entries, '
         f'{priced} prices updated, '
         f'{sov_systems} sovereignty systems tracked, '
@@ -112,3 +123,56 @@ def check_payments_task(year, month, requested_by=None):
         f' complete: {matched} corp(s) marked as paid'
     )
     return matched
+
+
+# ─── MANUALLY TRIGGERED MAINTENANCE ───────────────────────────────────────────
+#
+# These back the buttons in Settings. They are Celery tasks rather than direct
+# calls for two reasons: the work is slow enough to time out a web request —
+# the ore import alone makes one ESI call per group — and a task that runs
+# inside the web process appears nowhere in Alliance Auth's task monitor, so
+# there is no record of it having run, by whom, or whether it finished.
+
+
+@shared_task
+def sync_sov_systems_task(requested_by=None):
+    """Refreshes the known systems list. Backs the Systems tab button."""
+    from .services import sync_sov_systems
+
+    count = sync_sov_systems(force_recovery=True)
+    result = f'{count} system(s) tracked'
+    logger.info(f'Sovereignty sync by {requested_by or "unknown"}: {result}')
+    return result
+
+
+@shared_task
+def sync_ore_categories_task(requested_by=None):
+    """Imports the ore list from ESI. Backs the Tax Rates tab button."""
+    from .services import sync_ore_categories
+
+    imported, updated = sync_ore_categories()
+    result = f'{imported} new, {updated} updated'
+    logger.info(f'Ore import by {requested_by or "unknown"}: {result}')
+    return result
+
+
+@shared_task
+def repair_location_names_task(requested_by=None):
+    """Re-resolves placeholder locations. Backs the Systems tab button."""
+    from .services import repair_unresolved_ledger_names
+
+    repaired = repair_unresolved_ledger_names()
+    result = f'{repaired} name(s) resolved'
+    logger.info(f'Location repair by {requested_by or "unknown"}: {result}')
+    return result
+
+
+@shared_task
+def update_prices_task(requested_by=None):
+    """Prices entries that have none. Backs the Pricing tab button."""
+    from .services import update_market_prices
+
+    updated = update_market_prices()
+    result = f'{updated} entrie(s) priced'
+    logger.info(f'Price update by {requested_by or "unknown"}: {result}')
+    return result

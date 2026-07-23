@@ -1,6 +1,47 @@
 # Changelog
 
 
+## [0.11.0] - 2026-07-23
+
+### Added
+- **Taxable scope** (`TaxableScope`, migration `0019`): the alliances and corporations whose characters are taxed at all. Player accounts routinely hold characters with no connection to the alliance — high-sec alts, trade characters, corps left behind — and their mining reaches the plugin through the owner's personal ledger regardless. Without a scope it was billed like anything else, charging players for ore mined where the alliance has no claim. Set on a new *Scope* tab; an alliance entry covers its corps as they come and go, a corporation entry is for corps outside it, such as renters
+- Mining outside the scope still appears in the miner's own ledger, marked excluded, rather than vanishing — the entry is a fact, only the billing changes
+- **The daily sync task is renamed** `daily_mining_sync` → `daily_mining_sync_task` (migration `0020`), so it reads like the seven other tasks instead of being the one exception. Existing schedules are repointed by the migration: django-celery-beat stores the task as a string, and a schedule left pointing at the old path would simply never find it — Celery reports that nowhere useful, so the daily sync would have stopped silently
+- **Every maintenance button now runs as a Celery task.** The sovereignty sync, ore import, location repair and price update ran directly inside the web request, so they appeared nowhere in Alliance Auth's task monitor — no record that they had run, who started them, or whether they finished — and the ore import, which makes one ESI call per group, could take long enough to time out the page. They are dispatched as tasks now, tagged with the officer who triggered them
+- **Buttons look the same across the plugin.** Page actions had accumulated five different treatments — filled and outline, full size and small, in three colours — so nothing about a button's appearance told you what it did. They now match the navigation bar: small and outlined. Filled colour is kept only where it carries meaning, on the call to action inside an alert and on the state-changing *Mark as Paid*
+- **A single navigation bar on every page.** Each page carried its own hand-assembled set of links before, and they had drifted: Settings offered no way back to the ledger, the pilot view knew only where it came from, and adding a page meant remembering to link it from three others. The bar reads permissions directly, so it works wherever it is included without a matching change in Python, and marks the current page
+
+### Fixed
+- **The ore import skipped every ordinary asteroid group, leaving those types at the Default rate.** Classification matched on group names like *Exceptional Moon Asteroids*, but plain ore groups are named after the ore itself — *Veldspar*, *Arkonor*, *Scordite* — which matched nothing, so those groups were passed over silently. Since everything in EVE's Asteroid category is mineable by definition, an unrecognised group is now filed as plain Ore, and the groups that took that route are named in the log so a genuinely missing rule is still visible
+- The Settings warning about types taxed at Default now names them instead of only counting them
+
+### Notes
+- **The scope starts empty, which taxes everything** — exactly what every install did before, so upgrading changes nothing until someone sets one. Settings says so plainly while it is empty, and removing the last entry warns that everything is taxable again
+- Scope is judged on a character's **current** corporation. Mining history carries no corporation, so present membership is all there is; someone who leaves the alliance takes any unpaid billing with them, which is the same outcome as leaving without paying
+
+
+## [0.10.2] - 2026-07-23
+
+Follow-up to 0.10.1, from running it on a live install. Every item here is the
+same shape of problem: something failed quietly and left the plugin looking
+healthy while it under-charged, over-charged, or did nothing at all.
+
+### Added
+- **The daily sync schedules itself.** It previously relied on the administrator adding a `CELERYBEAT_SCHEDULE` entry to `local.py`. Forgetting it raised nothing and logged nothing, so the plugin looked fine while no sync ever ran, and the omission surfaced only when someone noticed their ledger was weeks stale. A periodic task is created on first migrate and then left alone — retiming, renaming or disabling it in the admin all stick. Deleting it brings it back, since an absent schedule is indistinguishable from a fresh install; untick *enabled* to stop it for good
+
+### Fixed
+- **Locations that failed to resolve once stayed broken forever, and silently taxed exempt moons.** A failed lookup wrote `Unknown (id)` into the ledger and nothing revisited it, because later syncs prefer a stored name and found that one. Beyond reading badly it defeats tax-free moons: the exemption matches on the structure name, a placeholder matches nothing, and the ore is taxed with no sign of why. Re-resolved by the daily sync, with a warning and a button in Settings while any remain
+- **Tax-free moons whose structure name matches nothing are now flagged.** Same failure from the other end: a name that no ledger entry carries can never match, so the moon is inert and the page gives no hint of it. This became widespread when the structure field moved from free text to a dropdown, since hand-typed names rarely agree with ESI character for character. The Alliance Moons tab lists the affected moons with the closest observed name as a hint, left for an officer to apply — matching automatically could exempt the wrong structure, losing revenue with nothing to show for it
+- **A failed price lookup left everything at zero value, and said so only at debug level.** No price means no taxable value, so a pricing outage under-charges the whole alliance while the plugin appears to work. Failures are warnings now, the ore types that could not be priced are named rather than counted, and Settings reports how many entries are affected with a button to retry
+
+
+## [0.10.1] - 2026-07-22
+
+Retag of 0.10.0 with no code changes — the original tag had already been
+published and was left in place rather than moved.
+
+---
+
 ## [0.10.0] - 2026-07-22
 
 ### Added

@@ -1,6 +1,7 @@
 import logging
 
 from django.db import models
+from django.db.models import Q
 
 from .models import MiningLedgerEntry, OreCategory
 
@@ -678,16 +679,24 @@ def update_market_prices():
 
     # Per-unit price for each ore type, resolved once for the whole batch.
     price_map = _build_price_map(type_ids)
-    if not price_map:
+    if not price_map or not any(p > 0 for p in price_map.values()):
+        logger.warning(
+            f'No price found for any of {len(type_ids)} ore type(s); '
+            f'{entries.count()} ledger entrie(s) stay at zero value'
+        )
         return 0
 
     # Portion sizes + which types are priced by refined value (recipe present).
     portion_map, refined_type_ids = _portion_info(type_ids)
 
     updated = 0
+    unpriced_types = set()
     for entry in entries:
         price = price_map.get(entry.type_id, 0)
         if price <= 0:
+            # Neither Janice nor ESI knows this type — common for ore added in a
+            # recent expansion, where CCP has not computed an adjusted price yet.
+            unpriced_types.add(entry.type_id)
             continue
 
         billable_qty = entry.quantity
@@ -703,6 +712,19 @@ def update_market_prices():
 
     if updated:
         logger.info(f'Market prices updated for {updated} entries')
+
+    if unpriced_types:
+        # Named rather than counted: knowing which types are unpriced is what
+        # lets an officer decide whether it matters, and a zero-valued entry
+        # yields zero tax no matter how much was mined.
+        names = list(
+            MiningLedgerEntry.objects.filter(type_id__in=unpriced_types)
+            .values_list('type_name', flat=True).distinct()[:15]
+        )
+        logger.warning(
+            f'No price for {len(unpriced_types)} ore type(s), their entries stay '
+            f'at zero value: {", ".join(n for n in names if n)}'
+        )
 
     return updated
 
@@ -955,7 +977,10 @@ def _fetch_bulk_prices():
                 logger.warning(f'Market price refresh after 304 failed: {e2}')
                 return {}
 
-        logger.debug(f'Market prices not updated: {e}')
+        # Not a 304, so prices genuinely could not be fetched. Every entry then
+        # stays at zero value and therefore zero tax — too consequential to
+        # leave at debug level, where nobody would ever see it.
+        logger.warning(f'Could not fetch market prices, entries stay unpriced: {e}')
         return {}
 
 
@@ -1005,6 +1030,7 @@ def sync_ore_categories():
     imported = 0
     updated = 0
     skipped = 0
+    fallback_groups = set()
 
     for group_id in group_ids:
         try:
@@ -1019,6 +1045,17 @@ def sync_ore_categories():
         group = groups[0]
         group_name = getattr(group, 'name', '')
         group_category = classify_group_name(group_name)
+
+        if not group_category:
+            # Everything in this category is mineable by definition, so an
+            # unrecognised group is still ore — it just isn't ice, gas, moon
+            # ore or Mercoxit. Ordinary ore groups are named after the ore
+            # itself ("Veldspar", "Arkonor"), which matches none of the rules,
+            # and skipping them left those types at the Default rate with
+            # nothing to indicate why.
+            group_category = 'Ore'
+            fallback_groups.add(group_name)
+
         for type_id in (getattr(group, 'types', None) or []):
             name = _get_type_name_db_first(type_id, esi)
 
@@ -1026,10 +1063,6 @@ def sync_ore_categories():
             # type so a single ore can be pulled out of an otherwise ordinary
             # group — which is the whole point for things like Prismaticite.
             category = category_from_rules(name, group_name) or group_category
-            if not category:
-                logger.debug(f'No category for "{name}" in group "{group_name}", skipping')
-                skipped += 1
-                continue
 
             existing = OreCategory.objects.filter(type_id=type_id).first()
             if existing and existing.locked:
@@ -1051,8 +1084,114 @@ def sync_ore_categories():
             else:
                 updated += 1
 
+    if fallback_groups:
+        # Named rather than counted: if a group that should have its own
+        # category lands here, that is a missing rule, and only the name shows
+        # which one.
+        logger.info(
+            f'Filed as plain Ore for want of a more specific rule: '
+            f'{", ".join(sorted(fallback_groups))}'
+        )
+
     logger.info(
         f'Ore import complete — {imported} new, {updated} updated, '
         f'{skipped} locked and left unchanged'
     )
     return imported, updated
+
+
+def repair_unresolved_ledger_names(esi=None):
+    """
+    Re-resolves ledger entries whose location is still a placeholder.
+
+    A lookup that fails once is otherwise permanent: the name is written as
+    "Unknown (id)" or "Structure (id)" and nothing ever revisits it, because
+    _get_location_name_db_first prefers an existing name and finds that one.
+    Beyond looking wrong, it silently breaks tax-free moons — the exemption
+    matches on the structure name, and a placeholder matches nothing, so ore
+    from an exempt moon gets taxed with no indication why.
+
+    Returns the number of entries repaired.
+    """
+    from .models import MiningLedgerEntry
+
+    broken = MiningLedgerEntry.objects.filter(
+        Q(solar_system_name__startswith='Unknown (')
+        | Q(solar_system_name__startswith='Structure (')
+        | Q(solar_system_name='')
+    ).exclude(solar_system_id__isnull=True)
+
+    location_ids = list(broken.values_list('solar_system_id', flat=True).distinct())
+    if not location_ids:
+        return 0
+
+    if esi is None:
+        esi = _get_esi_client()
+
+    logger.info(f'Repairing {len(location_ids)} unresolved location name(s)')
+
+    repaired = 0
+    for location_id in location_ids:
+        # Structures need a token that can see them; systems are public. Any
+        # corp mining token will do for the structure case, since that is the
+        # same access the observer sync already relies on.
+        token = None
+        if location_id > STRUCTURE_ID_THRESHOLD:
+            token = _any_corp_mining_token()
+
+        name = _resolve_location_name_fresh(location_id, token, esi)
+        if not name:
+            continue
+
+        repaired += MiningLedgerEntry.objects.filter(
+            solar_system_id=location_id
+        ).exclude(solar_system_name=name).update(solar_system_name=name)
+
+    logger.info(f'Repaired {repaired} ledger entrie(s)')
+    return repaired
+
+
+def _any_corp_mining_token():
+    """Any valid corp-mining token, used to read structure names."""
+    from esi.models import Token
+    return (
+        Token.objects
+        .require_scopes('esi-industry.read_corporation_mining.v1')
+        .require_valid()
+        .first()
+    )
+
+
+def _resolve_location_name_fresh(location_id, token, esi):
+    """
+    Asks ESI for a location name, ignoring what the ledger already holds.
+
+    _get_location_name_db_first deliberately trusts a stored name, which is
+    exactly wrong when that stored name is the placeholder we are trying to
+    replace — hence this separate path.
+    """
+    from esi.exceptions import HTTPNotModified
+
+    def _fetch(op, force=False, **kwargs):
+        try:
+            return op(**kwargs).results(force_refresh=force)
+        except HTTPNotModified:
+            return op(**kwargs).results(force_refresh=True)
+
+    try:
+        if location_id > STRUCTURE_ID_THRESHOLD:
+            if not token:
+                return None
+            res = _fetch(
+                esi.client.Universe.GetUniverseStructuresStructureId,
+                structure_id=location_id, token=token,
+            )
+        else:
+            res = _fetch(
+                esi.client.Universe.GetUniverseSystemsSystemId,
+                system_id=location_id,
+            )
+        return res[0].name if res else None
+    except Exception as e:
+        logger.debug(f'Could not resolve location {location_id}: {e}')
+        return None
