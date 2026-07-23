@@ -59,6 +59,10 @@
                 ⚙️ {% trans "Settings" %}
             </a>
             {% endif %}
+            <a href="{% url 'miningtax:export_my_ledger' %}?year={{ year }}&month={{ month_num }}"
+               class="btn btn-outline-secondary">
+                📄 {% trans "Export CSV" %}
+            </a>
             {% if is_officer %}
             <form method="post" action="{% url 'miningtax:sync_now' %}">
                 {% csrf_token %}

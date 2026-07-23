@@ -2,6 +2,7 @@ from django.urls import path
 from . import views
 from . import pdf_views
 from . import api_views
+from . import csv_views
 
 app_name = 'miningtax'
 
@@ -34,6 +35,10 @@ urlpatterns = [
     path('settings/exemption/add/', views.settings_add_exemption, name='settings_add_exemption'),
     path('settings/exemption/<int:pk>/delete/', views.settings_delete_exemption, name='settings_delete_exemption'),
     path('settings/exemption/<int:pk>/toggle/', views.settings_toggle_exemption, name='settings_toggle_exemption'),
+
+    path('csv/my-ledger/', csv_views.export_my_ledger, name='export_my_ledger'),
+    path('csv/pilot/<int:character_id>/', csv_views.export_pilot_ledger, name='export_pilot_ledger'),
+    path('csv/alliance/', csv_views.export_alliance_billing, name='export_alliance_billing'),
 
     path('pdf/corp/<int:corp_id>/', pdf_views.download_corp_pdf, name='download_corp_pdf'),
     path('pdf/all/', pdf_views.download_all_corps_zip, name='download_all_corps_zip'),

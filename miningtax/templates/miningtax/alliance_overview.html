@@ -25,6 +25,10 @@
                class="btn btn-success">
                 📦 {% trans "Download All as ZIP" %}
             </a>
+            <a href="{% url 'miningtax:export_alliance_billing' %}?year={{ year }}&month={{ month }}"
+               class="btn btn-outline-success">
+                📄 {% trans "Export CSV" %}
+            </a>
             {% endif %}
         </div>
     </div>
