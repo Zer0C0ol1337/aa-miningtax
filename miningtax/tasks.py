@@ -20,8 +20,11 @@ def daily_mining_sync():
     # ledgers that reference it are priced and taxed.
     ore_new, ore_updated = sync_ore_categories()
 
-    synced_chars = sync_all_characters()
+    # Corp observers first: the personal sync subtracts what they report in
+    # order to derive belt and anomaly mining, so it needs their figures to
+    # already be in place for the day being processed.
     synced_corps = sync_all_corp_observers()
+    synced_chars = sync_all_characters()
     priced = update_market_prices()
     sov_systems = sync_sov_systems()
 
@@ -74,6 +77,11 @@ def manual_sync_task(user_id):
 
     from .services import sync_character_mining
 
+    # Corp observers first, same reasoning as the daily task: the personal sync
+    # derives belt and anomaly mining by subtracting what the observers report,
+    # so running it first would credit structure mining twice.
+    corp_synced = sync_all_corp_observers()
+
     user_characters = [co.character for co in user.character_ownerships.all()]
     total_synced = 0
     for character in user_characters:
@@ -81,8 +89,6 @@ def manual_sync_task(user_id):
             total_synced += sync_character_mining(character)
         except Exception as e:
             logger.warning(f'Sync failed for {character.character_name}: {e}')
-
-    corp_synced = sync_all_corp_observers()
     priced = update_market_prices()
 
     result = (

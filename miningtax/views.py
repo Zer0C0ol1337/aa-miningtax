@@ -149,11 +149,20 @@ def dashboard(request):
         total_mined_value += entry.total_value
         total_tax += tax_info['tax_amount']
 
+    # Characters without a personal mining token. Their belt and anomaly mining
+    # is invisible here — moon mining still shows up, because that arrives via
+    # the corp observer sync and needs no token of the pilot's own. The result
+    # is a ledger that looks like the player only ever mined moons, with nothing
+    # on screen to explain the gap, so it is named explicitly.
+    characters_without_token = _characters_missing_mining_token(request.user)
+
     prev_year, prev_month = _prev_month(year, month)
     next_year, next_month = _next_month(year, month)
 
     context = {
         'rows': rows,
+        'characters_without_token': characters_without_token,
+        'add_token_url': _add_character_url(),
         'total_mined_value': total_mined_value,
         'total_tax': total_tax,
         'month': f'{month_name[month]} {year}',
@@ -974,3 +983,51 @@ def settings_add_taxrate(request):
     else:
         messages.warning(request, f'⚠️ {category} already has a rate.')
     return redirect('miningtax:settings')
+
+
+PERSONAL_MINING_SCOPE = 'esi-industry.read_character_mining.v1'
+
+
+def _characters_missing_mining_token(user):
+    """
+    Characters of this user that have no valid personal mining token, as a list
+    of names. Empty — the normal case — costs one query.
+    """
+    try:
+        from esi.models import Token
+    except ImportError:
+        return []
+
+    from allianceauth.eveonline.models import EveCharacter
+
+    owned = EveCharacter.objects.filter(
+        pk__in=user.character_ownerships.all().values_list('character_id', flat=True)
+    ).order_by('character_name')
+    if not owned:
+        return []
+
+    eve_ids = [c.character_id for c in owned]
+    with_token = set(
+        Token.objects
+        .filter(character_id__in=eve_ids)
+        .require_scopes(PERSONAL_MINING_SCOPE)
+        .require_valid()
+        .values_list('character_id', flat=True)
+    )
+    return [c.character_name for c in owned if c.character_id not in with_token]
+
+
+def _add_character_url():
+    """
+    Alliance Auth's "add character" flow, so the warning can link straight to
+    the fix. Resolved rather than hardcoded, and None if this Auth version names
+    it differently — the warning then simply carries no link instead of raising
+    NoReverseMatch on every dashboard load.
+    """
+    from django.urls import reverse, NoReverseMatch
+    for name in ('authentication:add_character', 'add_character'):
+        try:
+            return reverse(name)
+        except NoReverseMatch:
+            continue
+    return None

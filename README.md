@@ -263,6 +263,30 @@ regardless.
 
 ---
 
+## Two Sources, One Ledger
+
+Mining reaches the plugin two ways, and both are needed for a complete picture.
+
+**Personal ledgers** need a token from each pilot
+(`esi-industry.read_character_mining.v1`) and cover everything they mined,
+wherever it happened. **Corp observers** need one token from a corp member with
+the appropriate in-game role and report what was mined at the corp's own
+structures — by every pilot, including ones who never registered in Alliance
+Auth.
+
+Moon mining therefore arrives twice: once in the pilot's ledger against the
+solar system, once per structure via the observer. The personal sync stores only
+the difference between its day total and what the observers already account for,
+so structure mining is counted once while belt and anomaly mining is kept
+separately alongside it.
+
+The practical consequence is worth knowing: a pilot **without** a personal token
+still shows up, but only with moon mining, since that is reported by the
+structure rather than by them. Their dashboard names the affected characters and
+links to Alliance Auth's add-character flow.
+
+---
+
 ## Corp Observer Sync
 
 Using a director/CEO character's `esi-industry.read_corporation_mining.v1` token, the plugin pulls mining data for every observer (structure) of the corp, covering all members mining there whether or not they've ever logged in to Alliance Auth. Unknown characters are automatically registered in Alliance Auth via ESI.

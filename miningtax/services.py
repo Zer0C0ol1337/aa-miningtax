@@ -1,5 +1,7 @@
 import logging
 
+from django.db import models
+
 from .models import MiningLedgerEntry, OreCategory
 
 logger = logging.getLogger(__name__)
@@ -47,18 +49,61 @@ def _get_corptools_entries(character):
         return None
 
 
-def _has_structure_entry(character, date, type_id):
+def _structure_quantity(character, date, type_id):
     """
-    Checks whether a corp-observer-sourced entry (solar_system_id > STRUCTURE_ID_THRESHOLD)
-    already exists for character/date/type_id. If so, the personal ledger sync should
-    NOT overwrite it with less precise data.
+    How much of this ore the corp observers already report for that day at
+    structures (moon drills).
+
+    ESI reports the same moon mining twice — once in the character's own ledger
+    against the solar system, and once per structure via the corp observer — so
+    this figure is what has to be deducted from the personal total to avoid
+    counting it twice.
     """
-    existing = MiningLedgerEntry.objects.filter(
-        character=character, date=date, type_id=type_id
-    ).first()
-    if existing and existing.solar_system_id and existing.solar_system_id > STRUCTURE_ID_THRESHOLD:
-        return True
-    return False
+    total = MiningLedgerEntry.objects.filter(
+        character=character,
+        date=date,
+        type_id=type_id,
+        solar_system_id__gt=STRUCTURE_ID_THRESHOLD,
+    ).aggregate(total=models.Sum('quantity'))['total']
+    return total or 0
+
+
+def _save_non_structure_entry(character, date, type_id, type_name,
+                              personal_quantity, location_id, location_name):
+    """
+    Stores what a character mined *outside* structures on a given day: the
+    personal ledger's total for that ore minus whatever the observers already
+    account for.
+
+    Belt and anomaly mining used to disappear whenever the same ore was also
+    mined at a moon that day — the row was skipped so as not to overwrite the
+    more precise structure entry, and with one row per character/date/type there
+    was nowhere else to put it. Both now coexist, distinguished by location,
+    and the subtraction keeps the total honest.
+    """
+    remainder = (personal_quantity or 0) - _structure_quantity(character, date, type_id)
+
+    if remainder <= 0:
+        # Everything that day came from structures. Any leftover row from an
+        # earlier sync would now be double counting, so it goes.
+        MiningLedgerEntry.objects.filter(
+            character=character, date=date, type_id=type_id,
+            solar_system_id=location_id,
+        ).delete()
+        return False
+
+    MiningLedgerEntry.objects.update_or_create(
+        character=character,
+        date=date,
+        type_id=type_id,
+        solar_system_id=location_id,
+        defaults={
+            'type_name': type_name,
+            'quantity': remainder,
+            'solar_system_name': location_name,
+        }
+    )
+    return True
 
 
 # ─── PERSONAL CHARACTER SYNC ──────────────────────────────────────────────────
@@ -84,22 +129,11 @@ def _sync_from_corptools(character, entries):
     """
     saved = 0
     for entry in entries:
-        if _has_structure_entry(character, entry['date'], entry['type_id']):
+        if _save_non_structure_entry(
+            character, entry['date'], entry['type_id'], entry['type_name'],
+            entry['quantity'], entry['solar_system_id'], entry['solar_system_name'],
+        ):
             saved += 1
-            continue
-
-        MiningLedgerEntry.objects.update_or_create(
-            character=character,
-            date=entry['date'],
-            type_id=entry['type_id'],
-            defaults={
-                'type_name': entry['type_name'],
-                'quantity': entry['quantity'],
-                'solar_system_id': entry['solar_system_id'],
-                'solar_system_name': entry['solar_system_name'],
-            }
-        )
-        saved += 1
     return saved
 
 
@@ -137,26 +171,15 @@ def _sync_from_esi(character):
 
     saved = 0
     for entry in ledger:
-        if _has_structure_entry(character, entry.date, entry.type_id):
-            saved += 1
-            continue
-
         type_name = _get_type_name_db_first(entry.type_id, esi)
         location_id = getattr(entry, 'solar_system_id', None)
         location_name = _get_location_name_db_first(location_id, token, esi)
 
-        MiningLedgerEntry.objects.update_or_create(
-            character=character,
-            date=entry.date,
-            type_id=entry.type_id,
-            defaults={
-                'type_name': type_name,
-                'quantity': entry.quantity,
-                'solar_system_id': location_id,
-                'solar_system_name': location_name,
-            }
-        )
-        saved += 1
+        if _save_non_structure_entry(
+            character, entry.date, entry.type_id, type_name,
+            entry.quantity, location_id, location_name,
+        ):
+            saved += 1
 
     return saved
 
@@ -235,14 +258,18 @@ def sync_corp_observer(corp_id, corp_name, token):
 
             type_name = _get_type_name_db_first(entry.type_id, esi)
 
+            # The structure has to be part of the lookup, not just the payload:
+            # keyed on character/date/ore alone this would match a belt entry
+            # for the same ore that day and rewrite it into a structure entry,
+            # which is precisely the data loss this is meant to avoid.
             MiningLedgerEntry.objects.update_or_create(
                 character=character,
                 date=entry.last_updated,
                 type_id=entry.type_id,
+                solar_system_id=observer_id,
                 defaults={
                     'type_name': type_name,
                     'quantity': entry.quantity,
-                    'solar_system_id': observer_id,
                     'solar_system_name': structure_name,
                 }
             )

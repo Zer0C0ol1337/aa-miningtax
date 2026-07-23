@@ -60,7 +60,11 @@ class MiningLedgerEntry(models.Model):
 
     class Meta:
         default_permissions = ()
-        unique_together = ('character', 'date', 'type_id')
+        # Location is part of the identity: the same ore mined on the same day
+        # in a belt and at a moon are two separate facts. Without it the belt
+        # entry had nowhere to live and was dropped in favour of the more
+        # precise structure entry.
+        unique_together = ('character', 'date', 'type_id', 'solar_system_id')
 
     def __str__(self):
         return f"{self.character.character_name} - {self.type_name} x{self.quantity}"

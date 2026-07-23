@@ -12,8 +12,12 @@
 
 ### Changed
 - Ore with no category is now classified from its group in eveuniverse instead of falling through to the Default rate
+- **A ledger entry is now identified by location as well** (migration `0016`), and corp observers sync before personal ledgers so the subtraction below has its figures in place
+
 
 ### Fixed
+- **Belt mining disappeared whenever the same ore was also mined at a moon that day.** Entries were identified by character, date and ore alone, so there was only one row for both, and the personal sync skipped its own rather than overwrite the more precise structure entry — leaving players with a ledger of nothing but moon ore. Since moon chunks contain ordinary asteroid ore, the overlap is routine rather than rare. Both now coexist, and the personal sync stores the difference between its day total and what the observers report, so nothing is overwritten and nothing is counted twice
+- **Characters with no personal mining token are now named on the dashboard**, with a link to authorize them. Their belt and anomaly mining cannot be read at all, while their moon mining still arrives through the corp observer sync — so the gap looked like a bug in the tool rather than a missing token
 - Selecting a solar system could return an empty moon list when ESI answered 304 while the local cache had missed. The system lookup and both name-resolution paths now discard the ETag and refetch once — harmless, since systems and moon names are static
 - Solar system names were stored as `Unknown (id)` placeholders for the same reason, leaving the dropdown showing IDs. Rows already stored that way are repaired on the next sync
 - The structure picker read from an endpoint requiring Director, so a member with in-game structure access still saw nothing. It now uses the corp's mining observers and tries every available token before concluding the role is missing
