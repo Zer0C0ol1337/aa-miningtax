@@ -21,7 +21,7 @@ from .billing import calculate_alliance_billing, calculate_entry_tax
 from .models import MiningLedgerEntry
 from .views import (
     check_access, has_basic_access, has_officer_access,
-    get_ceo_corp_id, is_ceo_only, _corp_for_entry,
+    own_corporation_id, is_corp_scoped, _corp_for_entry,
 )
 
 
@@ -115,7 +115,7 @@ def export_pilot_ledger(request, character_id):
     if main.pk not in own_character_pks:
         if not has_officer_access(request.user):
             return HttpResponse('Not permitted.', status=403)
-        restricted = get_ceo_corp_id(request.user) if is_ceo_only(request.user) else None
+        restricted = own_corporation_id(request.user) if is_corp_scoped(request.user) else None
         if restricted and main.corporation_id != restricted:
             return HttpResponse('Not permitted.', status=403)
 
@@ -153,7 +153,7 @@ def export_alliance_billing(request):
 
     data = calculate_alliance_billing(year, month)
 
-    restricted = get_ceo_corp_id(request.user) if is_ceo_only(request.user) else None
+    restricted = own_corporation_id(request.user) if is_corp_scoped(request.user) else None
 
     def rows():
         yield [f'Mining Tax — {year}-{month:02d}']

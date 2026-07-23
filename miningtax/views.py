@@ -32,38 +32,49 @@ def has_basic_access(user):
 
 
 def has_officer_access(user):
+    """
+    Access to billing views at all — either alliance-wide or, with
+    corp_billing, limited to the holder's own corporation.
+    """
     if user.is_superuser:
         return True
-    if user.has_perm('miningtax.mining_officer'):
-        return True
-    return get_ceo_corp_id(user) is not None
+    return (
+        user.has_perm('miningtax.mining_officer')
+        or user.has_perm('miningtax.corp_billing')
+    )
 
 
-def get_ceo_corp_id(user):
+def own_corporation_id(user):
     """
-    Returns the corporation_id if the user is the CEO of a corp (via any of
-    their registered characters), otherwise None. Requires
-    EveCorporationInfo.ceo_id to be populated (set by Alliance Auth's
-    periodic corp update task).
+    The corporation a corp_billing holder is limited to: the corporation of
+    their main character, falling back to any registered character.
+
+    Who deserves that access is a decision for whoever runs the Auth instance,
+    expressed by assigning the permission — earlier versions detected CEOs from
+    EveCorporationInfo.ceo_id and granted access automatically, which meant the
+    plugin decided, the grant appeared nowhere in the permission UI, and any alt
+    who happened to be CEO of some unrelated corp brought it along.
     """
-    from allianceauth.eveonline.models import EveCorporationInfo
+    try:
+        main = user.profile.main_character
+        if main and main.corporation_id:
+            return main.corporation_id
+    except Exception:
+        pass
+
     for co in user.character_ownerships.select_related('character').all():
-        char = co.character
-        corp = EveCorporationInfo.objects.filter(corporation_id=char.corporation_id).first()
-        if corp and corp.ceo_id and corp.ceo_id == char.character_id:
-            return corp.corporation_id
+        if co.character.corporation_id:
+            return co.character.corporation_id
     return None
 
 
-def is_ceo_only(user):
+def is_corp_scoped(user):
     """
-    True if the user only has officer access because they're a CEO
-    (auto-detected), not because of the mining_officer permission or
-    superuser status.
+    True when the user may see billing, but only for their own corporation.
     """
     if user.is_superuser or user.has_perm('miningtax.mining_officer'):
         return False
-    return get_ceo_corp_id(user) is not None
+    return user.has_perm('miningtax.corp_billing')
 
 
 def has_full_officer_access(user):
@@ -178,8 +189,12 @@ def dashboard(request):
     return render(request, 'miningtax/dashboard.html', context)
 
 
-@check_access(has_basic_access)
+@check_access(has_full_officer_access)
 def sync_now(request):
+    # Refreshing every corporation's observers is an alliance-wide operation,
+    # so it sits with the other alliance-wide actions behind the real
+    # permission rather than the CEO bypass — a CEO reads their own corp, they
+    # do not spend rate limit on everyone's behalf.
     from .tasks import manual_sync_task
 
     logger.info(f'Manual sync queued by {request.user.username}')
@@ -252,11 +267,21 @@ def alliance_overview(request):
             }
 
     restricted_to_corp = None
-    if is_ceo_only(request.user):
-        restricted_to_corp = get_ceo_corp_id(request.user)
+    totals = data['totals']
+
+    if is_corp_scoped(request.user):
+        restricted_to_corp = own_corporation_id(request.user)
         corps_with_status = {
             cid: cdata for cid, cdata in corps_with_status.items()
             if cid == restricted_to_corp
+        }
+        # The corp list was already filtered, but the totals were not — a CEO
+        # could read the alliance's entire mined value and tax income off the
+        # summary cards while seeing only their own corp below. Recomputed from
+        # what they are actually allowed to see.
+        totals = {
+            'mined': sum((c['total_mined'] for c in corps_with_status.values()), Decimal('0')),
+            'tax': sum((c['total_tax'] for c in corps_with_status.values()), Decimal('0')),
         }
 
     from .payments import payment_code_for
@@ -270,7 +295,7 @@ def alliance_overview(request):
 
     context = {
         'corps': corps_with_status,
-        'totals': data['totals'],
+        'totals': totals,
         'year': year,
         'month': month,
         'prev_year': prev_year,
@@ -288,7 +313,7 @@ def mark_paid(request, corp_id):
     if request.method != 'POST':
         return redirect('miningtax:alliance_overview')
 
-    if is_ceo_only(request.user) and get_ceo_corp_id(request.user) != corp_id:
+    if is_corp_scoped(request.user) and own_corporation_id(request.user) != corp_id:
         logger.warning(f'{request.user.username}: attempted mark_paid on corp {corp_id} outside their own corp — denied')
         messages.error(request, '❌ You can only manage billing for your own corporation.')
         return redirect('miningtax:alliance_overview')
@@ -327,7 +352,7 @@ def mark_unpaid(request, corp_id):
     if request.method != 'POST':
         return redirect('miningtax:alliance_overview')
 
-    if is_ceo_only(request.user) and get_ceo_corp_id(request.user) != corp_id:
+    if is_corp_scoped(request.user) and own_corporation_id(request.user) != corp_id:
         logger.warning(f'{request.user.username}: attempted mark_unpaid on corp {corp_id} outside their own corp — denied')
         messages.error(request, '❌ You can only manage billing for your own corporation.')
         return redirect('miningtax:alliance_overview')
@@ -814,7 +839,7 @@ def pilot_detail(request, character_id):
             messages.error(request, '❌ You can only view your own characters.')
             return redirect('miningtax:dashboard')
 
-        restricted_to_corp = get_ceo_corp_id(request.user) if is_ceo_only(request.user) else None
+        restricted_to_corp = own_corporation_id(request.user) if is_corp_scoped(request.user) else None
         if restricted_to_corp and main.corporation_id != restricted_to_corp:
             messages.error(request, '❌ You can only view pilots of your own corporation.')
             return redirect('miningtax:alliance_overview')

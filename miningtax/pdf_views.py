@@ -11,7 +11,7 @@ from allianceauth.eveonline.models import EveCorporationInfo
 from .billing import calculate_alliance_billing
 from .models import MoonRental
 from .pdf_export import generate_corp_invoice_pdf
-from .views import check_access, has_officer_access
+from .views import check_access, has_officer_access, own_corporation_id, is_corp_scoped
 
 
 # Generiert die PDF-Abrechnung für eine einzelne Corp und liefert sie als Download.
@@ -20,6 +20,12 @@ from .views import check_access, has_officer_access
 def download_corp_pdf(request, corp_id):
     year  = int(request.GET.get('year',  date.today().year))
     month = int(request.GET.get('month', date.today().month))
+
+    # CEOs reach officer views through the automatic bypass rather than a
+    # granted permission, so their scope has to be enforced here as well —
+    # otherwise the invoice of any corp is one edited URL away.
+    if is_corp_scoped(request.user) and own_corporation_id(request.user) != corp_id:
+        return HttpResponse('Not permitted.', status=403)
 
     data = calculate_alliance_billing(year, month)
 
@@ -58,6 +64,14 @@ def download_all_corps_zip(request):
     month = int(request.GET.get('month', date.today().month))
 
     data = calculate_alliance_billing(year, month)
+
+    # Same reasoning as the single invoice: a CEO gets a ZIP of their own corp
+    # rather than of every corp in the alliance.
+    if is_corp_scoped(request.user):
+        own_corp = own_corporation_id(request.user)
+        data['corps'] = {
+            cid: cdata for cid, cdata in data['corps'].items() if cid == own_corp
+        }
 
     if not data['corps']:
         return HttpResponse('Keine Daten für diesen Monat.', status=404)

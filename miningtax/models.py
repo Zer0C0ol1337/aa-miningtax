@@ -8,9 +8,15 @@ class General(models.Model):
         default_permissions = ()
         verbose_name = 'general'
         verbose_name_plural = 'general'
+        # Three tiers: View, Corp, Admin. The labels lead with the tier name so
+        # the permission list reads as a ladder rather than three unrelated
+        # entries. Codenames are deliberately left alone — they are what group
+        # assignments point at, and renaming them would silently void every
+        # existing assignment on a running instance.
         permissions = (
-            ('basic_access', 'Can view Mining Tax'),
-            ('mining_officer', 'Can access Alliance Billing and Settings (Mining Officer)'),
+            ('basic_access', 'View — own mining ledger and profile'),
+            ('corp_billing', "Corp — billing for own corporation only"),
+            ('mining_officer', 'Admin — alliance-wide billing, settings and sync'),
         )
 
 

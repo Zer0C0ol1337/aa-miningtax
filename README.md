@@ -141,19 +141,27 @@ sudo supervisorctl restart myauth:
 
 Assign in the Alliance Auth Admin under **Authentication → Users** or via groups.
 
-| Permission | Codename | Access |
+Three tiers, each a superset of the one above it:
+
+| Tier | Codename | Access |
 |---|---|---|
-| Basic access | `miningtax.basic_access` | Personal mining dashboard |
-| Mining Officer | `miningtax.mining_officer` | Alliance-wide billing + settings + payment checks |
+| **View** | `miningtax.basic_access` | Own mining ledger and per-character breakdown |
+| **Corp** | `miningtax.corp_billing` | Billing for the holder's **own corporation** only |
+| **Admin** | `miningtax.mining_officer` | Alliance-wide billing, settings, sync, payment checks |
+
+Codenames predate the tier names and are kept as they are: group assignments
+point at them, so renaming would quietly void every existing assignment.
 
 Superusers (`is_staff`/`is_superuser`) always have full access regardless of assigned permissions.
 
-**CEO auto-access:** a corp's CEO (per `EveCorporationInfo.ceo_id`) automatically gets read access to their own corp's billing and can mark their own corp paid/unpaid, without needing `mining_officer` assigned. They do **not** get access to Settings or alliance-wide actions (Check Payments Now, editing tax rates/moons/treasury) — those still require the real permission.
+**`corp_billing` is scoped to one corporation** — the one the holder's main character belongs to. That applies everywhere the same way: the billing page and its summary figures, marking paid/unpaid, the PDF invoice, the all-corps ZIP (which contains only their corp) and the CSV export. It does **not** grant Settings or any alliance-wide action — manual sync, Check Payments Now, editing tax rates, moons or treasury all need `mining_officer`, since they spend shared ESI rate limit or change data on everyone's behalf.
+
+The plugin deliberately makes no assumptions about who deserves which access. Earlier versions detected corp CEOs from `EveCorporationInfo.ceo_id` and granted them corp access automatically; that meant the plugin decided rather than the Auth admin, the grant appeared nowhere in the permission UI and could not be revoked, and it came along with any alt who happened to be CEO of an unrelated one-man corp. Assign `corp_billing` to whoever should have it — CEOs, directors, a mining coordinator — through the usual groups.
 
 **Recommended assignment:**
-- All alliance members: `basic_access`
-- Alliance Leader, Co-Leader, Mining Officer roles: `mining_officer`
-- Corp CEOs: no assignment needed, access is automatic and scoped to their own corp
+- All alliance members: **View**
+- Corp leadership who should see their own corp's bill: **Corp**
+- Alliance Leader, Co-Leader, Mining Officer roles: **Admin**
 
 ---
 
