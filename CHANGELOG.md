@@ -1,23 +1,35 @@
 # Changelog
 
 
-## [0.11.0] - 2026-07-23
+## [0.10.3] - 2026-07-23
 
 ### Added
-- **Taxable scope** (`TaxableScope`, migration `0019`): the alliances and corporations whose characters are taxed at all. Player accounts routinely hold characters with no connection to the alliance — high-sec alts, trade characters, corps left behind — and their mining reaches the plugin through the owner's personal ledger regardless. Without a scope it was billed like anything else, charging players for ore mined where the alliance has no claim. Set on a new *Scope* tab; an alliance entry covers its corps as they come and go, a corporation entry is for corps outside it, such as renters
-- Mining outside the scope still appears in the miner's own ledger, marked excluded, rather than vanishing — the entry is a fact, only the billing changes
-- **The daily sync task is renamed** `daily_mining_sync` → `daily_mining_sync_task` (migration `0020`), so it reads like the seven other tasks instead of being the one exception. Existing schedules are repointed by the migration: django-celery-beat stores the task as a string, and a schedule left pointing at the old path would simply never find it — Celery reports that nowhere useful, so the daily sync would have stopped silently
-- **Every maintenance button now runs as a Celery task.** The sovereignty sync, ore import, location repair and price update ran directly inside the web request, so they appeared nowhere in Alliance Auth's task monitor — no record that they had run, who started them, or whether they finished — and the ore import, which makes one ESI call per group, could take long enough to time out the page. They are dispatched as tasks now, tagged with the officer who triggered them
-- **Buttons look the same across the plugin.** Page actions had accumulated five different treatments — filled and outline, full size and small, in three colours — so nothing about a button's appearance told you what it did. They now match the navigation bar: small and outlined. Filled colour is kept only where it carries meaning, on the call to action inside an alert and on the state-changing *Mark as Paid*
-- **A single navigation bar on every page.** Each page carried its own hand-assembled set of links before, and they had drifted: Settings offered no way back to the ledger, the pilot view knew only where it came from, and adding a page meant remembering to link it from three others. The bar reads permissions directly, so it works wherever it is included without a matching change in Python, and marks the current page
+- **Taxable scope** (`TaxableScope`, migration `0019`): the alliances and corporations whose characters are taxed at all. Player accounts routinely hold characters with no connection to the alliance — high-sec alts, trade characters, corps left behind — and their mining reaches the plugin through the owner's personal ledger regardless. Without a scope it was billed like anything else, charging players for ore mined where the alliance has no claim. Set on a new *Scope* tab; an alliance entry covers its corps as they come and go, a corporation entry is for corps outside it, such as renters. Mining outside the scope still appears in the miner's own ledger marked excluded rather than vanishing — the entry is a fact, only the billing changes
+- **A single navigation bar on every page.** Each page carried its own hand-assembled set of links, and they had drifted: Settings offered no way back to the ledger, the pilot view knew only where it came from, and adding a page meant remembering to link it from three others. The bar reads permissions directly, so it works wherever it is included without a matching change in Python, and marks the current page
+
+### Changed
+- **The daily sync task is renamed** `daily_mining_sync` → `daily_mining_sync_task` (migration `0020`), so it reads like the seven others instead of being the one exception. Existing schedules are repointed by the migration: django-celery-beat stores the task as a string, and an entry left pointing at the old path would simply never find it — Celery reports that nowhere useful, so the daily sync would have stopped without a word
+- **The maintenance buttons run as Celery tasks.** The sovereignty sync, ore import, location repair and price update ran inside the web request, so they appeared nowhere in the task monitor — no record of having run, by whom, or whether they finished — and the ore import, one ESI call per ore group, was slow enough to risk timing out the page. They are dispatched as tasks now, tagged with the officer who triggered them
+- **Buttons look the same throughout.** Page actions had accumulated a dozen treatments — filled and outline, full size and small, in several colours — applied by whatever seemed right at the time, so appearance carried no information. They now match the navigation bar: small and outlined. Filled colour is kept only where it means something, on the call to action inside an alert and on the state-changing *Mark as Paid*
 
 ### Fixed
-- **The ore import skipped every ordinary asteroid group, leaving those types at the Default rate.** Classification matched on group names like *Exceptional Moon Asteroids*, but plain ore groups are named after the ore itself — *Veldspar*, *Arkonor*, *Scordite* — which matched nothing, so those groups were passed over silently. Since everything in EVE's Asteroid category is mineable by definition, an unrecognised group is now filed as plain Ore, and the groups that took that route are named in the log so a genuinely missing rule is still visible
-- The Settings warning about types taxed at Default now names them instead of only counting them
+- **The ore import skipped every ordinary asteroid group, leaving those types at the Default rate.** Classification matched group names like *Exceptional Moon Asteroids*, but plain ore groups are named after the ore itself — *Veldspar*, *Arkonor*, *Scordite* — which matched nothing, so those groups were passed over silently. Everything in EVE's Asteroid category is mineable by definition, so an unrecognised group is now filed as plain Ore, and the groups taking that route are named in the log, keeping a genuinely missing rule visible
+- The Settings warning about types taxed at Default names them instead of only counting them
+
+### Packaging
+- **Alliance Auth 5.0 or later is now required**, and the Django classifiers say 5.0–5.2 rather than 4.2. The metadata claimed support for AA 4.6 on Django 4.2, which nobody has run this on — the plugin has only ever been used against AA 5. Declaring compatibility that was never exercised is a promise the code cannot keep
+- Python 3.13 is declared, matching what `requires-python` already allowed
+- **`django-eveuniverse` is now optional rather than required**, and the README no longer contradicts that. Ore categories used to come from it; since this release they are imported from ESI directly, which is what made the difference. It remains recommended, because refined-value pricing needs its reprocessing recipes — without it ore is valued at the raw ESI price
+- Homepage and changelog links added alongside the issue tracker
+
+### Removed
+- **The duplicate `miningtax/README.md`.** It was a subset of the root README, referenced nowhere since packaging points at the root, and had already fallen behind — it still named the pre-0.11.0 sync task and covered none of the pricing, ore category or moon configuration added since 0.9. Two documents where only one is maintained is worse than one, because nothing tells the reader which they have in front of them
+- The pilot page's own back links, made redundant by the navigation bar
 
 ### Notes
 - **The scope starts empty, which taxes everything** — exactly what every install did before, so upgrading changes nothing until someone sets one. Settings says so plainly while it is empty, and removing the last entry warns that everything is taxable again
 - Scope is judged on a character's **current** corporation. Mining history carries no corporation, so present membership is all there is; someone who leaves the alliance takes any unpaid billing with them, which is the same outcome as leaving without paying
+- The README now states the version, so it, the changelog and `__init__.py` can be checked against each other
 
 
 ## [0.10.2] - 2026-07-23
@@ -48,8 +60,8 @@ published and was left in place rather than moved.
 - **CSV export** for the personal ledger, a single pilot, and the alliance billing summary, alongside the existing PDF invoices. Files are written with a BOM and semicolons, since they are opened in Excel far more often than parsed — without that, ore names with non-ASCII characters are mangled and the whole file lands in one column wherever the comma is the decimal separator. Exports reuse the access rules of the page they belong to
 - **Per-pilot detail view.** Every ledger entry of a player for a month, split by character and by ore category. Officers reach it from the alliance billing member list, members from their own dashboard. It covers the whole account rather than one character, since tax is assessed per player, and lists characters with no mining as well — which is how an alt whose ledger never synced becomes visible instead of quietly missing. Access is decided per character: your own always, anyone's as an officer, own corporation only as a CEO
 - **Complete ore list imported from ESI.** Walks EVE's Asteroid category down to every mineable type and classifies each by its group, so completeness follows from the data rather than from anyone remembering to add an ore. Runs with the daily sync, plus a button on the Tax Rates tab
-- **Category rules.** Assign ore to a category by matching a substring of its name or group, evaluated ahead of EVE's own grouping. Abyssal ore and Prismaticite ship as rules, since both sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches
-- **Locked categories.** A category set by hand can be protected from the automatic import. Without it, an ore deliberately parked in its own category to be taxed at 0% would be reclassified overnight and taxed again, with nothing in the UI to explain why
+- **Category rules** (migration `0015`). Assign ore to a category by matching a substring of its name or group, evaluated ahead of EVE's own grouping. Abyssal ore and Prismaticite ship as rules, since both sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches
+- **Locked categories** (migration `0014`). A category set by hand can be protected from the automatic import. Without it, an ore deliberately parked in its own category to be taxed at 0% would be reclassified overnight and taxed again, with nothing in the UI to explain why
 - **Tax rates can be created from Settings**, and categories in use without a rate are flagged — ore in them is billed at the Default rate with nothing else to indicate it
 
 ### Changed

@@ -22,7 +22,9 @@ requires-python = ">=3.10,<3.15"
 classifiers = [
     "Environment :: Web Environment",
     "Framework :: Django",
-    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Framework :: Django :: 5.2",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
@@ -31,6 +33,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
 ]
@@ -38,18 +41,27 @@ dynamic = [
     "version",
 ]
 dependencies = [
-    "allianceauth>=4.6",
+    "allianceauth>=5.0",
     "django-esi>=4",
     "reportlab>=4",
 ]
 
 [project.optional-dependencies]
-# Empfohlen: Corptools für DB-basiertes Mining-Caching (weniger ESI-Calls)
+# Recommended: corptools caches mining data in the database, cutting ESI calls
 corptools = [
     "allianceauth-corptools",
 ]
+# Recommended: eveuniverse supplies authoritative type names and reprocessing
+# recipes. Without it the plugin still runs — every use is guarded — but ore
+# whose category cannot be derived falls back to the Default tax rate, and
+# refined-value pricing is unavailable, so ore is valued at the raw ESI price.
+eveuniverse = [
+    "django-eveuniverse",
+]
 
 [project.urls]
+Homepage = "https://github.com/Zer0C0ol1337/aa-miningtax"
+Changelog = "https://github.com/Zer0C0ol1337/aa-miningtax/blob/main/CHANGELOG.md"
 Tracker = "https://github.com/Zer0C0ol1337/aa-miningtax/issues"
 
 [tool.hatch]
