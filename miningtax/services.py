@@ -1120,9 +1120,15 @@ def repair_unresolved_ledger_names(esi=None):
     """
     from .models import MiningLedgerEntry
 
+    # 'Unbekannt' and 'Mond-Struktur' are placeholders written by versions
+    # before the messages were translated. They are matched here too, or the
+    # oldest broken entries — the ones most likely to be un-exempting a
+    # tax-free moon — would be the only ones the repair could never reach.
     broken = MiningLedgerEntry.objects.filter(
         Q(solar_system_name__startswith='Unknown (')
         | Q(solar_system_name__startswith='Structure (')
+        | Q(solar_system_name__startswith='Unbekannt (')
+        | Q(solar_system_name__startswith='Mond-Struktur (')
         | Q(solar_system_name='')
     ).exclude(solar_system_id__isnull=True)
 

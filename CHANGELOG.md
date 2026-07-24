@@ -1,6 +1,12 @@
 # Changelog
 
 
+## [0.10.7] - 2026-07-24
+
+### Fixed
+- **The location repair could not see its oldest cases.** Placeholders written before the messages were translated read *Unbekannt (id)* and *Mond-Struktur (id)*, while the repair looked only for the English wording — so entries from the versions most likely to have them were the ones it could never reach. Since a tax-free moon is matched by its structure name, those were also the entries most likely to be taxed despite an exemption. Both spellings are recognised now, by the repair and by the warning that counts them
+
+
 ## [0.10.6] - 2026-07-23
 
 ### Documentation

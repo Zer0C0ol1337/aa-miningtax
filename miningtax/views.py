@@ -492,6 +492,8 @@ def settings_view(request):
     unresolved_locations = MiningLedgerEntry.objects.filter(
         Q(solar_system_name__startswith='Unknown (')
         | Q(solar_system_name__startswith='Structure (')
+        | Q(solar_system_name__startswith='Unbekannt (')
+        | Q(solar_system_name__startswith='Mond-Struktur (')
     ).count()
 
     # Entries that carry no price. They contribute nothing to anyone's bill,
