@@ -1,11 +1,15 @@
 # Changelog
 
 
-## [0.10.7] - 2026-07-24
+## [0.10.9] - 2026-07-24
+
+### Changed
+- **Out-of-scope corporations no longer appear on the billing page at all.** Setting a scope zeroed their tax but left them listed with whatever they had mined, so NPC corporations and corps that had never been part of the alliance still sat among the invoices — correct figures that read as a bug every time someone scrolled past, prompting the same question each month. Their entries are left out of the alliance's books entirely now. Exempt corporations are the opposite case and stay visible: they are members, and that they owe nothing is worth seeing
+- **Alliance membership is judged by the corporation, not by each character.** The alliance stored on a character goes stale — there is one copy per pilot, so a corporation leaving the alliance leaves hundreds of records still naming it, and every pilot in it kept being taxed however carefully the scope was set. The corporation's own record decides now, of which there is exactly one. Where Alliance Auth has no record of a corporation its membership cannot be confirmed, and it is left out rather than taxed on a guess: a scope says tax these and no others, and billing an outsider is the mistake people notice. That case is logged, so it stays a decision rather than a silence
 
 ### Fixed
-- **The location repair could not see its oldest cases.** Placeholders written before the messages were translated read *Unbekannt (id)* and *Mond-Struktur (id)*, while the repair looked only for the English wording — so entries from the versions most likely to have them were the ones it could never reach. Since a tax-free moon is matched by its structure name, those were also the entries most likely to be taxed despite an exemption. Both spellings are recognised now, by the repair and by the warning that counts them
-
+- **Alliance billing was slow to the point of being unpleasant.** Tax is worked out per ledger entry, and each entry re-read the same handful of tiny tables — ore categories, rates, exemptions, fleet sessions, moons, rentals — for up to eleven queries apiece. Unnoticeable for one pilot's month; for an alliance's it meant six figures of queries against tables that mostly hold single-digit row counts. Those tables are read once and held for a minute instead, with invalidation hanging off model signals so edits made through the Django admin count too
+- **The location repair could not see its oldest cases.** Placeholders written before the messages were translated read *Unbekannt (id)* and *Mond-Struktur (id)*, while the repair looked only for the English wording — so entries from the versions most likely to have them were the ones it could never reach. Since a tax-free moon is matched by its structure name, those were also the entries most likely to be taxed despite an exemption. Both spellings are recognised now
 
 ## [0.10.6] - 2026-07-23
 

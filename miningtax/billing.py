@@ -151,6 +151,140 @@ def forget_unclassifiable_types():
     cache.delete_many([f'miningtax:unclassifiable:{t}' for t in type_ids])
 
 
+# ─── LOOKUP CACHES ────────────────────────────────────────────────────────────
+#
+# Tax is worked out per ledger entry, and each entry used to re-read the same
+# handful of tiny tables — ore categories, rates, exemptions, fleet sessions,
+# moons, rentals. Eleven queries an entry is unnoticeable for one pilot's month
+# and ruinous for an alliance's: a monthly bill across ten thousand entries ran
+# to six figures of queries against tables that mostly hold single-digit row
+# counts.
+#
+# They are read once and held for a minute instead. Anything that edits them
+# calls invalidate_billing_caches(), so an officer never has to wonder whether
+# the figure in front of them predates the change they just made.
+
+BILLING_CACHE_TTL = 60
+
+# Defined here rather than beside the function that reads it: _CACHE_KEYS
+# below needs it, and module code runs top to bottom — the name has to exist
+# before the tuple is built, not merely before it is used.
+SCOPE_CACHE_KEY = 'miningtax:taxable_scope'
+
+_CACHE_KEYS = (
+    'miningtax:lookup:ore_categories',
+    'miningtax:lookup:tax_rates',
+    'miningtax:lookup:exemptions',
+    'miningtax:lookup:fleet_sessions',
+    'miningtax:lookup:tax_free_moons',
+    'miningtax:lookup:moon_rentals',
+    'miningtax:lookup:corp_alliances',
+    SCOPE_CACHE_KEY,
+)
+
+
+def invalidate_billing_caches():
+    """Drops every cached lookup. Called whenever one of them is edited."""
+    cache.delete_many(list(_CACHE_KEYS))
+
+
+def _cached(key, build):
+    value = cache.get(key)
+    if value is None:
+        value = build()
+        cache.set(key, value, BILLING_CACHE_TTL)
+    return value
+
+
+def _ore_categories():
+    return _cached(
+        'miningtax:lookup:ore_categories',
+        lambda: dict(OreCategory.objects.values_list('type_id', 'category')),
+    )
+
+
+def _tax_rates():
+    return _cached(
+        'miningtax:lookup:tax_rates',
+        lambda: {
+            c: r for c, r in TaxRate.objects.values_list('ore_category', 'tax_rate')
+        },
+    )
+
+
+def _exemptions():
+    def build():
+        rows = TaxExemption.objects.filter(active=True).values_list(
+            'character_id', 'corporation__corporation_id'
+        )
+        chars, corps = set(), set()
+        for char_pk, corp_id in rows:
+            if char_pk:
+                chars.add(char_pk)
+            if corp_id:
+                corps.add(corp_id)
+        return {'chars': chars, 'corps': corps}
+
+    return _cached('miningtax:lookup:exemptions', build)
+
+
+def _fleet_sessions():
+    return _cached(
+        'miningtax:lookup:fleet_sessions',
+        lambda: list(
+            FleetSession.objects.filter(exclude_from_billing=True).values(
+                'start_time', 'end_time', 'ore_type_id', 'ore_category'
+            )
+        ),
+    )
+
+
+def _tax_free_moons():
+    return _cached(
+        'miningtax:lookup:tax_free_moons',
+        lambda: list(
+            AllianceMoon.objects.filter(is_tax_free=True).values(
+                'structure_name', 'solar_system_name'
+            )
+        ),
+    )
+
+
+def _corp_alliances():
+    """
+    {corporation_id: alliance_id} from Alliance Auth's corporation records.
+
+    Preferred over the alliance stored on each character: there is one record
+    per corporation rather than one per pilot, so it is both cheaper to keep
+    current and far less likely to be carrying a value from before someone
+    changed corp. A character record that still names the old alliance would
+    otherwise keep billing a pilot who left months ago.
+    """
+    def build():
+        from allianceauth.eveonline.models import EveCorporationInfo
+        return {
+            corp_id: alliance_id
+            for corp_id, alliance_id in EveCorporationInfo.objects
+            .values_list('corporation_id', 'alliance__alliance_id')
+        }
+
+    return _cached('miningtax:lookup:corp_alliances', build)
+
+
+def _moon_rentals():
+    def build():
+        rentals = {}
+        rows = MoonRental.objects.filter(active=True).values_list(
+            'corporation__corporation_id', 'structure_name'
+        )
+        for corp_id, structure in rows:
+            if corp_id and structure:
+                rentals.setdefault(corp_id, set()).add(structure.strip().lower())
+        return rentals
+
+    return _cached('miningtax:lookup:moon_rentals', build)
+
+
 def get_ore_category(type_id):
     """
     Category for an ore type. The OreCategory table wins, so anything an officer
@@ -158,10 +292,9 @@ def get_ore_category(type_id):
     group and written back, which both fixes the current calculation and makes
     the result visible and editable in the admin afterwards.
     """
-    try:
-        return OreCategory.objects.get(type_id=type_id).category
-    except OreCategory.DoesNotExist:
-        pass
+    known = _ore_categories()
+    if type_id in known:
+        return known[type_id]
 
     name = ''
     group_name = ''
@@ -203,36 +336,30 @@ def get_ore_category(type_id):
         type_id=type_id,
         defaults={'type_name': name or f'Type {type_id}', 'category': derived},
     )
+    cache.delete('miningtax:lookup:ore_categories')
     logger.info(f'Classified unseeded type {type_id} ({name or "unknown"}) as {derived}')
     return derived
 
 
 def get_tax_rate(category):
-    try:
-        rate_obj = TaxRate.objects.get(ore_category=category)
-        return rate_obj.tax_rate
-    except TaxRate.DoesNotExist:
-        try:
-            return TaxRate.objects.get(ore_category='Default').tax_rate
-        except TaxRate.DoesNotExist:
-            return DEFAULT_TAX_RATE
+    rates = _tax_rates()
+    if category in rates:
+        return rates[category]
+    return rates.get('Default', DEFAULT_TAX_RATE)
 
 
 def is_excluded_by_fleet_session(entry, ore_category):
     entry_datetime = timezone.make_aware(
         timezone.datetime.combine(entry.date, timezone.datetime.min.time())
     )
-    matching_sessions = FleetSession.objects.filter(
-        exclude_from_billing=True,
-        start_time__lte=entry_datetime,
-        end_time__gte=entry_datetime,
-    )
-    for session in matching_sessions:
-        if session.ore_type_id and session.ore_type_id == entry.type_id:
+    for session in _fleet_sessions():
+        if not (session['start_time'] <= entry_datetime <= session['end_time']):
+            continue
+        if session['ore_type_id'] and session['ore_type_id'] == entry.type_id:
             return True
-        if session.ore_category and session.ore_category == ore_category:
+        if session['ore_category'] and session['ore_category'] == ore_category:
             return True
-        if not session.ore_type_id and not session.ore_category:
+        if not session['ore_type_id'] and not session['ore_category']:
             return True
     return False
 
@@ -252,28 +379,28 @@ def is_excluded_by_alliance_moon(entry):
         return False
 
     entry_structure = entry.solar_system_name.strip().lower()
-    for moon in AllianceMoon.objects.filter(is_tax_free=True):
-        if moon.structure_name:
+    for moon in _tax_free_moons():
+        structure = (moon['structure_name'] or '').strip().lower()
+        if structure:
             # Precise per-structure match — required when several moon structures
             # share one system, so only the named structure is exempted.
-            if moon.structure_name.strip().lower() == entry_structure:
+            if structure == entry_structure:
                 return True
-        elif moon.solar_system_name:
-            # Backward-compatible fallback for moons configured before the
-            # structure_name field existed (substring match on the system field).
-            if moon.solar_system_name.lower() in entry_structure:
-                return True
+            continue
+
+        # Backward-compatible fallback for moons configured before the
+        # structure_name field existed (substring match on the system field).
+        system = (moon['solar_system_name'] or '').lower()
+        if system and system in entry_structure:
+            return True
     return False
 
 
 def is_excluded_by_moon_rental(entry, corporation):
     if not entry.solar_system_name or not corporation:
         return False
-    return MoonRental.objects.filter(
-        corporation=corporation,
-        active=True,
-        structure_name__iexact=entry.solar_system_name
-    ).exists()
+    rented = _moon_rentals().get(corporation.corporation_id)
+    return bool(rented) and entry.solar_system_name.strip().lower() in rented
 
 
 def _get_main_character(character):
@@ -287,9 +414,6 @@ def _get_main_character(character):
         return character.character_ownership.user.profile.main_character
     except Exception:
         return None
-
-
-SCOPE_CACHE_KEY = 'miningtax:taxable_scope'
 
 
 def _taxable_scope():
@@ -334,14 +458,31 @@ def is_outside_taxable_scope(entry):
         return False
 
     character = entry.character
-    if character.corporation_id in scope['corps']:
+    corp_id = character.corporation_id
+
+    if corp_id in scope['corps']:
         return False
 
-    # alliance_id on EveCharacter is the real EVE alliance ID, which is what the
-    # scope stores — no lookup through EveAllianceInfo needed.
-    if character.alliance_id and character.alliance_id in scope['alliances']:
-        return False
+    # The corporation's own record decides, not the copy held on the character.
+    # Both are real EVE alliance IDs, but there is one corporation record per
+    # corporation and one character record per pilot — so the character's copy
+    # is the one that goes stale, and a pilot who changed corp months ago would
+    # keep being billed on the strength of it.
+    known_alliances = _corp_alliances()
+    if corp_id in known_alliances:
+        alliance_id = known_alliances[corp_id]
+        return not (alliance_id and alliance_id in scope['alliances'])
 
+    # Alliance Auth has no record of that corporation, so its membership cannot
+    # be confirmed. Setting a scope says "tax these and no others", and of the
+    # two ways to be wrong here, billing an outsider is the one people notice
+    # and resent — so an unconfirmable corporation is left alone and logged,
+    # rather than taxed on the strength of a guess.
+    logger.info(
+        f'Corporation {corp_id} ({entry.character.corporation_name or "unknown"}) '
+        f'is not registered in Alliance Auth, so its alliance cannot be '
+        f'confirmed — left out of billing while a scope is set'
+    )
     return True
 
 
@@ -353,23 +494,21 @@ def is_tax_exempt(entry):
     # resolved (not registered in Auth, or no main set on the profile).
     # Evaluated before every other exclusion, so an exemption always wins over
     # ore category, fleet sessions and moon configuration.
+    exempt = _exemptions()
+    if not exempt['chars'] and not exempt['corps']:
+        return False
+
     character = entry.character
 
-    if TaxExemption.objects.filter(active=True, character=character).exists():
+    if character.pk in exempt['chars']:
         return True
 
-    main = _get_main_character(character)
-    if main and main.pk != character.pk:
-        if TaxExemption.objects.filter(active=True, character=main).exists():
+    if exempt['chars']:
+        main = _get_main_character(character)
+        if main and main.pk != character.pk and main.pk in exempt['chars']:
             return True
 
-    corp_id = character.corporation_id
-    if corp_id and TaxExemption.objects.filter(
-        active=True, corporation__corporation_id=corp_id
-    ).exists():
-        return True
-
-    return False
+    return bool(character.corporation_id) and character.corporation_id in exempt['corps']
 
 
 def calculate_entry_tax(entry, corporation=None):
@@ -445,6 +584,16 @@ def calculate_alliance_billing(year, month):
     alliance_totals = {'mined': Decimal('0'), 'tax': Decimal('0')}
 
     for entry in entries:
+        # Out-of-scope mining is left out of the alliance's books entirely, not
+        # merely zero-rated. A corporation that is not ours has no place on a
+        # billing page — listing it with a mined value and no tax reads like an
+        # oversight and invites the question every time someone scrolls past.
+        #
+        # Exemptions are the opposite case and stay visible: those corps are
+        # members, and that they owe nothing is a decision worth seeing.
+        if is_outside_taxable_scope(entry):
+            continue
+
         corp = entry.character.corporation_id
         corp_name = entry.character.corporation_name or 'Unknown'
 
