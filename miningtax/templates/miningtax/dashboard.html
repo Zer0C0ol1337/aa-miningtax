@@ -50,7 +50,10 @@
 
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h1>⛏️ {% trans "Mining Tax" %} — {{ month }}</h1>
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 align-items-center">
+            <span class="badge bg-secondary" title="Mining Tax Version">
+                <i class="fas fa-code-branch me-1"></i>v{{ app_version }}
+            </span>
             <a href="{% url 'miningtax:export_my_ledger' %}?year={{ year }}&month={{ month_num }}"
                class="btn btn-sm btn-outline-secondary">
                 📄 {% trans "Export CSV" %}
@@ -81,6 +84,116 @@
         <a href="?year={{ next_year }}&month={{ next_month }}" class="btn btn-sm btn-outline-primary">
             {% trans "Next Month" %} ▶
         </a>
+    </div>
+
+    <div class="card mb-4 border-0 shadow-sm">
+        <div class="card-header text-white" style="background: linear-gradient(135deg, #4a90d9 0%, #5c6bc0 100%);">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="fas fa-chart-line me-2"></i>
+                    <strong>{% trans "Daily Mining Summary" %}</strong>
+                </div>
+                <small class="opacity-75">{{ yesterday_summary.date|date:"l, j F Y" }}</small>
+            </div>
+        </div>
+        <div class="card-body">
+            {% if yesterday_summary.entry_count > 0 %}
+            <style>
+                .stat-box {
+                    border: 2px solid;
+                    border-radius: 8px;
+                    padding: 1rem;
+                    text-align: center;
+                }
+                .stat-box.mined {
+                    border-color: #2196F3;
+                    background-color: rgba(33, 150, 243, 0.15);
+                }
+                .stat-box.tax {
+                    border-color: #f44336;
+                    background-color: rgba(244, 67, 54, 0.15);
+                }
+                .stat-box.entries {
+                    border-color: #4CAF50;
+                    background-color: rgba(76, 175, 80, 0.15);
+                }
+                .stat-box .icon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+                .stat-box.mined .icon { color: #1976D2; }
+                .stat-box.tax .icon { color: #D32F2F; }
+                .stat-box.entries .icon { color: #388E3C; }
+                .stat-box .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: #666; margin-bottom: 0.25rem; }
+                .stat-box .value { font-size: 1.5rem; font-weight: bold; }
+                .stat-box.mined .value { color: #1976D2; }
+                .stat-box.tax .value { color: #D32F2F; }
+                .stat-box.entries .value { color: #388E3C; }
+                .stat-box .unit { font-size: 0.7rem; color: #888; }
+
+                .ore-badge {
+                    display: inline-block;
+                    background: linear-gradient(135deg, #FFA726 0%, #FB8C00 100%);
+                    color: #fff;
+                    padding: 0.4rem 0.8rem;
+                    border-radius: 20px;
+                    margin: 0.25rem;
+                    font-weight: 500;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                }
+                .ore-badge i { margin-right: 0.3rem; }
+                .ore-badge .qty { opacity: 0.9; font-size: 0.85em; }
+            </style>
+            <div class="row mb-3">
+                <div class="col-4">
+                    <div class="stat-box mined">
+                        <div class="icon"><i class="fas fa-gem"></i></div>
+                        <div class="label">{% trans "Mined Value" %}</div>
+                        <div class="value">{{ yesterday_summary.total_value|isk }}</div>
+                        <div class="unit">ISK</div>
+                    </div>
+                </div>
+                <div class="col-4">
+                    <div class="stat-box tax">
+                        <div class="icon"><i class="fas fa-coins"></i></div>
+                        <div class="label">{% trans "Tax" %}</div>
+                        <div class="value">{{ yesterday_summary.total_tax|isk }}</div>
+                        <div class="unit">ISK</div>
+                    </div>
+                </div>
+                <div class="col-4">
+                    <div class="stat-box entries">
+                        <div class="icon"><i class="fas fa-list-ol"></i></div>
+                        <div class="label">{% trans "Entries" %}</div>
+                        <div class="value">{{ yesterday_summary.entry_count }}</div>
+                        <div class="unit">{% trans "ops" %}</div>
+                    </div>
+                </div>
+            </div>
+            {% if yesterday_summary.ore_breakdown %}
+            <div class="mt-3">
+                <h6 class="mb-2" style="color: #666;"><i class="fas fa-cubes me-1"></i> {% trans "Top Ores by Value" %}</h6>
+                <div class="d-flex flex-wrap">
+                    {% for ore_name, data in yesterday_summary.ore_breakdown %}
+                    <span class="ore-badge">
+                        <i class="fas fa-cube"></i>
+                        {{ ore_name }}
+                        <span class="qty">×{{ data.quantity|default:"0" }}</span>
+                    </span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+            {% else %}
+            <div class="text-center py-4">
+                <i class="fas fa-moon fa-3x mb-3" style="color: #999;"></i>
+                <div style="color: #666;">
+                    {% trans "No mining activity recorded for yesterday" %}
+                </div>
+                <small class="d-block mt-2" style="color: #888;">
+                    <i class="fas fa-info-circle me-1"></i>
+                    {% trans "Start mining and sync your ledger to see stats here" %}
+                </small>
+            </div>
+            {% endif %}
+        </div>
     </div>
 
     <div class="row mb-4">

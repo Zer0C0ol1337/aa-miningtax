@@ -1,6 +1,11 @@
 # Changelog
 
 
+## [0.10.11] - 2026-08-31
+
+### Fixed
+- **The 0.10.10 dashboard and pilot-detail template changes never made it to the push repo.** `dashboard.html` (daily summary card) and `pilot_detail.html` (daily mining chart) had been edited on the development server, but only the Python files were copied over for the 0.10.10 release — the templates stayed behind. Both features worked correctly wherever `views.py`/`billing.py` ran against the *old* templates: the context data was there, nothing rendered it. No code change, just the two templates that should have shipped with 0.10.10
+
 ## [0.10.10] - 2026-08-31
 
 ### Added

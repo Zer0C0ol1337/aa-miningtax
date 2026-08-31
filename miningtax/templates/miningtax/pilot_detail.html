@@ -76,6 +76,111 @@
     </div>
   </div>
 
+  {% if chart_peak %}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <strong>{% trans "Mined per Day" %}</strong>
+      <div class="small d-flex flex-wrap gap-2 align-items-center">
+        {% for category, colour in chart_stats.legend %}
+          <span class="d-inline-flex align-items-center gap-1">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:{{ colour }}"></span>
+            {{ category }}
+          </span>
+        {% endfor %}
+        <span class="text-muted ms-2">{% trans "faded = not taxed" %}</span>
+      </div>
+    </div>
+    <div class="card-body">
+      {% comment %}
+        Drawn with plain elements and a little CSS rather than a charting
+        library: one more dependency, fetched from a CDN at that, is a poor
+        trade for thirty-one rectangles. Heights come from the view, templates
+        being unable to divide.
+      {% endcomment %}
+      <style>
+        .mt-chart-wrap { display: flex; gap: .5rem; }
+        .mt-chart-axis { display: flex; flex-direction: column; justify-content: space-between;
+                         font-size: .65rem; color: var(--bs-secondary-color, #6c757d);
+                         text-align: right; height: 160px; white-space: nowrap; }
+        .mt-chart { position: relative; flex: 1; display: flex; align-items: flex-end;
+                    gap: 2px; height: 160px;
+                    border-bottom: 1px solid var(--bs-border-color, #444); }
+        .mt-chart-grid { position: absolute; left: 0; right: 0; border-top: 1px dashed
+                         var(--bs-border-color, #444); opacity: .5; }
+        .mt-chart-col { position: relative; flex: 1; display: flex; flex-direction: column;
+                        justify-content: flex-end; height: 100%; }
+        .mt-chart-seg { border-radius: 2px 2px 0 0; }
+        .mt-chart-col:hover .mt-chart-seg { opacity: .7; }
+        .mt-chart-labels { display: flex; gap: 2px; margin-top: 4px; }
+        .mt-chart-label { flex: 1; text-align: center; font-size: .65rem;
+                          color: var(--bs-secondary-color, #6c757d); }
+      </style>
+
+      <div class="mt-chart-wrap">
+        <div class="mt-chart-axis">
+          <div>{{ chart_peak|isk }}</div>
+          <div>{{ chart_stats.midpoint|isk }}</div>
+          <div>0</div>
+        </div>
+        <div>
+          <div class="mt-chart">
+            {# Reference lines, so a bar can be read as an amount and not only compared. #}
+            <div class="mt-chart-grid" style="bottom: 50%"></div>
+            <div class="mt-chart-grid" style="bottom: 100%"></div>
+            {% for d in chart_days %}
+              {% comment %}
+                The ore list goes in the title rather than on the bar: thirty-one
+                columns leave no room for a label, and what someone wants when
+                checking a day is which ore it was, which only matters once they
+                have picked the day out.
+              {% endcomment %}
+              <div class="mt-chart-col"
+                   title="{{ d.day }}. — {{ d.total|isk }} ISK{% if d.tax %} · {% trans "tax" %} {{ d.tax|isk }}{% endif %}{% if d.excluded %} · {% trans "excluded" %} {{ d.excluded|isk }}{% endif %}{% for o in d.ores %}&#10;{{ o.name }}: {{ o.quantity }} ({{ o.value|isk }}){% endfor %}{% if d.more_ores %}&#10;{% blocktrans count counter=d.more_ores %}and {{ counter }} more{% plural %}and {{ counter }} more{% endblocktrans %}{% endif %}">
+                {% for seg in d.segments %}
+                  <div class="mt-chart-seg"
+                       style="height: {{ seg.height }}%; background: {{ seg.colour }};{% if seg.excluded %} opacity: .45;{% endif %}"></div>
+                {% endfor %}
+              </div>
+            {% endfor %}
+          </div>
+          <div class="mt-chart-labels">
+            {% for d in chart_days %}
+              {# Every fifth day only; thirty-one labels in this width are unreadable. #}
+              <div class="mt-chart-label">{% if d.day == 1 or d.day|divisibleby:5 %}{{ d.day }}{% endif %}</div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="row g-3 mt-2 text-center">
+        <div class="col-6 col-md-3">
+          <div class="text-muted small">{% trans "Days mined" %}</div>
+          <div class="fs-5">{{ chart_stats.active_days }} / {{ chart_stats.days_in_month }}</div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="text-muted small">{% trans "Average per active day" %}</div>
+          <div class="fs-5">{{ chart_stats.average|isk }}</div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="text-muted small">{% trans "Best day" %}</div>
+          <div class="fs-5">
+            {{ chart_peak|isk }}
+            {% if chart_stats.peak_day %}<span class="text-muted small">({{ chart_stats.peak_day }}.)</span>{% endif %}
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="text-muted small">{% trans "Excluded from tax" %}</div>
+          <div class="fs-5 text-success">{{ chart_stats.excluded_total|isk }}</div>
+        </div>
+      </div>
+
+      <div class="text-muted small mt-3">
+        {% trans "Each bar is stacked by ore category, largest at the bottom. Faded segments were not taxed — a tax-free moon, an exemption, or a fleet session. Hover a day to see what was mined and what it came to; a day with no bar had no mining recorded, which is worth a second look if you were out that day." %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {% comment %}
     Per-character split. Useful for spotting an alt that never synced: it will
     either be missing here entirely or show a suspiciously low figure.
