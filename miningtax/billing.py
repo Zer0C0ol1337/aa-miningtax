@@ -324,10 +324,29 @@ def get_ore_category(type_id):
         name, group_name = _type_and_group_from_esi(type_id)
 
     derived = category_from_rules(name, group_name) or classify_group_name(group_name)
+
+    if not derived and group_name:
+        # Every type reaching this point came from a mining ledger entry, so
+        # it is ore by definition — this function is never called with a
+        # type_id from anywhere else. EVE names many ordinary ore groups
+        # after the ore itself ("Bistot", "Arkonor") rather than "Asteroid"
+        # or similar, which classify_group_name has no pattern for.
+        #
+        # The bulk import (services.sync_ore_categories) already falls back
+        # to 'Ore' for exactly this reason. Doing the same here keeps this
+        # on-demand path from disagreeing with the bulk import about ore
+        # mined between two scheduled imports — without this, a type stayed
+        # at Default until the next full "Import ore list" run happened to
+        # sweep it up, even though the bulk import would have classified it
+        # correctly from the start.
+        derived = 'Ore'
+
     if not derived:
+        # group_name is empty here — genuinely unresolvable (eveuniverse
+        # doesn't have it and ESI didn't answer), not merely unrecognised.
         logger.info(
-            f'Type {type_id} ("{name or "unknown"}", group "{group_name or "unknown"}") '
-            f'matches no category rule, taxed at the Default rate'
+            f'Type {type_id} ("{name or "unknown"}") could not be resolved '
+            f'via eveuniverse or ESI, taxed at the Default rate'
         )
         cache.set(f'miningtax:unclassifiable:{type_id}', True, 60 * 60 * 24)
         return 'Default'
@@ -638,6 +657,22 @@ def calculate_alliance_billing(year, month):
     return {'corps': corps_data, 'totals': alliance_totals}
 
 
+def _serialise_members(members):
+    """
+    Members dict -> JSON-safe dict, same treatment category_snapshot already
+    gets: Decimal isn't JSON-serialisable, so 'mined'/'tax' go through str().
+    character_id is already a plain int and passes through unchanged.
+    """
+    return {
+        name: {
+            'mined': str(data['mined']),
+            'tax': str(data['tax']),
+            'character_id': data.get('character_id'),
+        }
+        for name, data in members.items()
+    }
+
+
 def save_billing_records_for_month(year, month):
     """
     Saves an AllianceBillingRecord for all corps for a given month.
@@ -667,6 +702,16 @@ def save_billing_record(corp_id, corp_data, year, month):
 
     total_due = corp_data['total_tax'] + rental_total
 
+    category_snapshot = {
+        cat: {
+            'value': str(data['value']),
+            'tax': str(data['tax']),
+            'rate': str(data['rate']),
+        }
+        for cat, data in corp_data['categories'].items()
+    }
+    member_snapshot = _serialise_members(corp_data['members'])
+
     record, created = AllianceBillingRecord.objects.get_or_create(
         corporation=corp_obj,
         month=month,
@@ -676,14 +721,8 @@ def save_billing_record(corp_id, corp_data, year, month):
             'mining_tax_amount': corp_data['total_tax'],
             'moon_rental_total': rental_total,
             'total_due': total_due,
-            'category_snapshot': {
-                cat: {
-                    'value': str(data['value']),
-                    'tax': str(data['tax']),
-                    'rate': str(data['rate']),
-                }
-                for cat, data in corp_data['categories'].items()
-            },
+            'category_snapshot': category_snapshot,
+            'member_snapshot': member_snapshot,
         }
     )
 
@@ -692,14 +731,8 @@ def save_billing_record(corp_id, corp_data, year, month):
         record.mining_tax_amount = corp_data['total_tax']
         record.moon_rental_total = rental_total
         record.total_due = total_due
-        record.category_snapshot = {
-            cat: {
-                'value': str(data['value']),
-                'tax': str(data['tax']),
-                'rate': str(data['rate']),
-            }
-            for cat, data in corp_data['categories'].items()
-        }
+        record.category_snapshot = category_snapshot
+        record.member_snapshot = member_snapshot
         record.save()
 
     return record

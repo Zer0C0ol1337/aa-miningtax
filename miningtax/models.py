@@ -143,6 +143,12 @@ class AllianceBillingRecord(models.Model):
     moon_rental_total = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     total_due = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     category_snapshot = models.JSONField(null=True, blank=True)
+    # Per-member totals for the month, keyed by main character name, each with
+    # 'mined', 'tax' and 'character_id' — the same shape calculate_alliance_billing
+    # builds live. Stored here so the billing overview can show members without
+    # a live recalculation on every page load; only written once a day by the
+    # daily sync (or on first view of a fresh month), not on every request.
+    member_snapshot = models.JSONField(null=True, blank=True)
     paid = models.BooleanField(default=False)
     paid_at = models.DateTimeField(null=True, blank=True)
     auto_verified = models.BooleanField(default=False)

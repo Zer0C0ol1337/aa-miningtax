@@ -1,13 +1,13 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.9**
+**Version 0.10.10**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
 ## Features
 
-- **Personal mining dashboard** — this month's ledger entries with calculated tax
-- **Alliance-wide billing overview** — all corps, all members (grouped by main character), tax by ore category, moon rental fees, and total due
+- **Personal mining dashboard** — this month's ledger entries with calculated tax, plus a daily summary card for yesterday (total value, tax, top 5 ores by value) so a quick check doesn't require scrolling the full table
+- **Alliance-wide billing overview** — all corps, all members (grouped by main character), tax by ore category, moon rental fees, and total due. Reads from a daily-refreshed snapshot rather than recalculating the month live, so the page loads instantly instead of iterating the full ledger on every view
 - **Configurable tax rates** per ore category (R4 / R8 / R16 / R32 / R64 / Ice / Ore / Gas / Mercoxit), plus any category you define yourself
 - **Complete ore list, maintained by ESI** — every mineable type is imported and classified by its EVE group, so a newly introduced ore is never taxed at the Default rate unnoticed. The Settings page reports how many mined types still lack a category
 - **Category rules** — assign ore to a category by name, ahead of EVE's own grouping: abyssal ore and Prismaticite sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches. A category can also be locked so the automatic import leaves it alone
@@ -23,7 +23,7 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 - **Corptools integration** — reads mining data directly from Corptools' DB when available (zero extra ESI calls), falls back to its own ESI sync otherwise
 - **Automatic payment verification** — checks a configured treasury corp's wallet journal for incoming tax payments (reason keyword + amount + sender corp) and marks invoices as paid automatically; the required payment reason is shown with a one-click copy button
 - **Manual override** — mark/unmark an invoice as paid at any time
-- **CEO auto-access** — a corp's CEO automatically sees their own corp's billing (read-only view, restricted to their corp) without needing a permission assigned; full Settings and alliance-wide actions still require the `mining_officer` permission
+- **Corp-scoped billing access** — the `corp_billing` permission gives read-only billing for the holder's own corporation only (based on their main character's corporation); no automatic access is granted based on in-game CEO status. Full Settings and alliance-wide actions still require the `mining_officer` permission
 - **Background sync** — manual sync and payment checks run as Celery tasks, avoiding request timeouts on large datasets
 - **Permissions** — `basic_access` (dashboard), `mining_officer` (billing + settings); superusers always have full access
 - **i18n** — English by default; German fully translated; 6 more languages scaffolded
@@ -337,6 +337,10 @@ Corp observer data always takes precedence over personal ledger data for the sam
 When a `TreasuryConfig` is active, the daily sync (and the manual "Check Payments Now" button, run as a Celery task) reads the configured corp's wallet journal and automatically marks matching invoices as paid (`auto_verified=True`). Invoices with nothing due (`total_due <= 0`) are skipped entirely, so a stray matching transaction can't trivially mark a zero-tax invoice as paid.
 
 Use "Reset to Unpaid" to correct a mismatch, e.g. after testing.
+
+### Payment Code Timing
+
+Each corp's payment reference code stays hidden on the Alliance Billing page until **11:00 UTC (EVE downtime) on the 2nd of the following month**. A billing record can exist — and the page can render — before that point, since the record itself is written by the daily snapshot sync; the code specifically waits so it's never handed to a payer before the closing days of the month have had a full sync cycle to land. Before the reveal time, the code column simply shows nothing for that corp.
 
 ---
 

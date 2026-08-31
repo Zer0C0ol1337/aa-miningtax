@@ -1,6 +1,25 @@
 # Changelog
 
 
+## [0.10.10] - 2026-08-31
+
+### Added
+- **Daily mining summary on the dashboard.** Yesterday's total value, tax, and top 5 ores by value across all of the user's characters, shown before the full ledger table — a quick "did I actually mine yesterday" check without scrolling
+- **App version now visible on every page**, not just the dashboard — `alliance_overview` and `settings` carry `app_version` in their context as well, so an officer checking Settings doesn't have to switch tabs to confirm what's deployed
+
+### Changed
+- **Payment codes on the Alliance Billing page stay hidden until 11:00 UTC (EVE downtime) on the 2nd of the following month.** A corp's reference code used to appear as soon as a billing record existed for the month, which could be before the last day's ledger data had finished syncing. The code now only reveals once that window has closed, so it's never handed out ahead of the figures it's attached to
+- **Alliance Billing reads from a daily snapshot instead of recalculating the month live on every page view.** Corp totals, category breakdowns, and — new here — per-member mining and tax figures now come from `AllianceBillingRecord`, refreshed once a day (or on first view of a fresh month) rather than iterated fresh from the ledger on each request. A page that took 1–3 minutes to load for a busy alliance now loads from cache
+
+### Fixed
+- **Two ordinary belt/anomaly ores (Arkonor, Bistot) stayed at the Default tax rate between scheduled ore-list imports.** EVE names some ore groups literally after the ore itself — "Arkonor", "Bistot" — rather than a generic pattern like "Asteroid", which `classify_group_name()` had no rule for. The bulk importer already fell back to "Ore" for exactly this case; the on-demand classification path used when a new type is first mined now does the same, so the two can no longer disagree with each other
+
+### Data model
+- `AllianceBillingRecord` gains `member_snapshot` (migration `0021`), storing the same per-member mined/tax/character_id data that used to be computed live on every Alliance Billing view. Serialised the same way `category_snapshot` already was — `Decimal` through `str()`, `character_id` unchanged
+
+### Notes
+- Existing `AllianceBillingRecord` rows from before this release have `member_snapshot = null` and render with an empty member list until the next daily sync overwrites them. `save_billing_record()` skips already-`paid` records, so a paid corp's member list needs an unpaid/re-mark cycle (or a manual `save_billing_records_for_month()` call) to backfill
+
 ## [0.10.9] - 2026-07-24
 
 ### Changed

@@ -131,9 +131,64 @@ def _next_month(year, month):
     return year, month + 1
 
 
+def _get_yesterday_summary(user):
+    """
+    Calculates mining summary for yesterday for all user's characters.
+
+    Returns dict with total value, tax, and ore breakdown. Always returns
+    a dict even when no mining occurred, so the widget can show a message.
+    """
+    yesterday = date.today() - timedelta(days=1)
+    user_character_ids = user.character_ownerships.all().values_list('character_id', flat=True)
+
+    entries = MiningLedgerEntry.objects.filter(
+        character_id__in=user_character_ids,
+        date=yesterday,
+    ).select_related('character')
+
+    if not entries.exists():
+        return {
+            'date': yesterday,
+            'total_value': Decimal('0'),
+            'total_tax': Decimal('0'),
+            'ore_breakdown': [],
+            'entry_count': 0,
+        }
+
+    total_value = Decimal('0')
+    total_tax = Decimal('0')
+    ore_breakdown = {}  # type_name -> {'quantity': int, 'value': Decimal}
+
+    for entry in entries:
+        tax_info = calculate_entry_tax(entry)
+        total_value += entry.total_value
+        total_tax += tax_info['tax_amount']
+
+        if entry.type_name not in ore_breakdown:
+            ore_breakdown[entry.type_name] = {
+                'quantity': 0,
+                'value': Decimal('0'),
+            }
+        ore_breakdown[entry.type_name]['quantity'] += entry.quantity
+        ore_breakdown[entry.type_name]['value'] += entry.total_value
+
+    return {
+        'date': yesterday,
+        'total_value': total_value,
+        'total_tax': total_tax,
+        'ore_breakdown': sorted(
+            ore_breakdown.items(),
+            key=lambda x: x[1]['value'],
+            reverse=True
+        )[:5],  # Top 5 ores by value
+        'entry_count': entries.count(),
+    }
+
+
 @check_access(has_basic_access)
 def dashboard(request):
     from calendar import month_name
+    from . import __version__
 
     today = date.today()
     year = int(request.GET.get('year', today.year))
@@ -188,6 +243,8 @@ def dashboard(request):
         'next_month': next_month,
         'is_officer': has_officer_access(request.user),
         'is_full_officer': has_full_officer_access(request.user),
+        'yesterday_summary': _get_yesterday_summary(request.user),
+        'app_version': __version__,
     }
     return render(request, 'miningtax/dashboard.html', context)
 
@@ -211,20 +268,50 @@ def sync_now(request):
     return redirect('miningtax:dashboard')
 
 
+def _deserialise_members(member_snapshot):
+    """
+    Reverses _serialise_members() in billing.py: JSON stores 'mined'/'tax' as
+    strings (JSON has no Decimal type), so they are converted back on the way
+    out. Without this the template's ISK-formatting filters would either error
+    on a string or silently print it unformatted.
+
+    None (no snapshot yet, or JSON explicitly null) becomes an empty dict, same
+    as the previous "always empty" behaviour — a corp with no snapshot simply
+    shows no member rows rather than raising.
+    """
+    if not member_snapshot:
+        return {}
+    return {
+        name: {
+            'mined': Decimal(data.get('mined', '0')),
+            'tax': Decimal(data.get('tax', '0')),
+            'character_id': data.get('character_id'),
+        }
+        for name, data in member_snapshot.items()
+    }
+
+
 @check_access(has_officer_access)
 def alliance_overview(request):
+    from . import __version__
+
     today = date.today()
     year = int(request.GET.get('year', today.year))
     month = int(request.GET.get('month', today.month))
 
-    data = calculate_alliance_billing(year, month)
+    # Use cached billing records instead of live calculation for better performance
+    # Live calculation can take 2-3 minutes for large alliances; records are updated daily
+    billing_records = AllianceBillingRecord.objects.filter(
+        month=month, year=year
+    ).select_related('corporation')
 
-    paid_records = {
-        r.corporation.corporation_id: r
-        for r in AllianceBillingRecord.objects.filter(
+    # If no records exist yet, calculate once and save them
+    if not billing_records.exists():
+        from .billing import save_billing_records_for_month
+        save_billing_records_for_month(year, month)
+        billing_records = AllianceBillingRecord.objects.filter(
             month=month, year=year
         ).select_related('corporation')
-    }
 
     rental_totals = {}
     for rental in MoonRental.objects.filter(active=True).select_related('corporation'):
@@ -232,21 +319,34 @@ def alliance_overview(request):
         rental_totals[corp_id] = rental_totals.get(corp_id, Decimal('0')) + rental.monthly_fee
 
     corps_with_status = {}
-    for corp_id, corp_data in data['corps'].items():
-        record = paid_records.get(corp_id)
+    totals_mined = Decimal('0')
+    totals_tax = Decimal('0')
+
+    for record in billing_records:
+        corp_id = record.corporation.corporation_id
         rental_fee = rental_totals.get(corp_id, Decimal('0'))
-        live_total_due = corp_data['total_tax'] + rental_fee
-        total_due = record.total_due if (record and record.paid) else live_total_due
 
         corps_with_status[corp_id] = {
-            **corp_data,
-            'paid': record.paid if record else False,
-            'paid_at': record.paid_at if record else None,
-            'auto_verified': record.auto_verified if record else False,
+            'corp_name': record.corporation.corporation_name,
+            'total_mined': record.total_mined_value,
+            'total_tax': record.mining_tax_amount,
+            # Read from the daily snapshot rather than recalculated live — the
+            # whole point of reading AllianceBillingRecord here is to avoid a
+            # live pass over every ledger entry on every page view.
+            'members': _deserialise_members(record.member_snapshot),
+            'categories': record.category_snapshot or {},
+            'paid': record.paid,
+            'paid_at': record.paid_at,
+            'auto_verified': record.auto_verified,
             'moon_rental_total': rental_fee,
-            'total_due': total_due,
+            'total_due': record.total_due,
         }
 
+        if not record.paid:
+            totals_mined += record.total_mined_value
+            totals_tax += record.mining_tax_amount
+
+    # Add rental-only corps that don't have mining records
     for corp_id, rental_fee in rental_totals.items():
         if corp_id not in corps_with_status:
             from allianceauth.eveonline.models import EveCorporationInfo
@@ -254,23 +354,22 @@ def alliance_overview(request):
                 corp_obj = EveCorporationInfo.objects.get(corporation_id=corp_id)
             except EveCorporationInfo.DoesNotExist:
                 continue
-            record = paid_records.get(corp_id)
-            total_due = record.total_due if (record and record.paid) else rental_fee
+
             corps_with_status[corp_id] = {
                 'corp_name': corp_obj.corporation_name,
                 'total_mined': Decimal('0'),
                 'total_tax': Decimal('0'),
                 'members': {},
                 'categories': {},
-                'paid': record.paid if record else False,
-                'paid_at': record.paid_at if record else None,
-                'auto_verified': record.auto_verified if record else False,
+                'paid': False,
+                'paid_at': None,
+                'auto_verified': False,
                 'moon_rental_total': rental_fee,
-                'total_due': total_due,
+                'total_due': rental_fee,
             }
 
     restricted_to_corp = None
-    totals = data['totals']
+    totals = {'mined': totals_mined, 'tax': totals_tax}
 
     if is_corp_scoped(request.user):
         restricted_to_corp = own_corporation_id(request.user)
@@ -278,19 +377,21 @@ def alliance_overview(request):
             cid: cdata for cid, cdata in corps_with_status.items()
             if cid == restricted_to_corp
         }
-        # The corp list was already filtered, but the totals were not — a CEO
-        # could read the alliance's entire mined value and tax income off the
-        # summary cards while seeing only their own corp below. Recomputed from
-        # what they are actually allowed to see.
         totals = {
             'mined': sum((c['total_mined'] for c in corps_with_status.values()), Decimal('0')),
             'tax': sum((c['total_tax'] for c in corps_with_status.values()), Decimal('0')),
         }
 
     from .payments import payment_code_for
+    from datetime import datetime, timezone
+
+    # Payment code reveals after EVE downtime on the 2nd of each month
+    # EVE downtime is at 11:00 UTC
     next_year, next_month = _next_month(year, month)
-    reveal_date = date(next_year, next_month, 1) + timedelta(days=1)
-    code_revealed = today >= reveal_date
+    reveal_datetime = datetime(next_year, next_month, 2, 11, 0, 0, tzinfo=timezone.utc)
+    now_utc = datetime.now(timezone.utc)
+    code_revealed = now_utc >= reveal_datetime
+
     for cid, cdata in corps_with_status.items():
         cdata['payment_code'] = payment_code_for(cid, month, year) if code_revealed else None
 
@@ -307,6 +408,7 @@ def alliance_overview(request):
         'next_month': next_month,
         'restricted_to_corp': restricted_to_corp,
         'is_full_officer': has_full_officer_access(request.user),
+        'app_version': __version__,
     }
     return render(request, 'miningtax/alliance_overview.html', context)
 
@@ -407,6 +509,8 @@ def check_payments_now(request):
 
 @check_access(has_full_officer_access)
 def settings_view(request):
+    from . import __version__
+
     _STANDARD_CATEGORIES = {
         'Default': 10.00,
         'Mercoxit': 10.00,
@@ -614,6 +718,7 @@ def settings_view(request):
         'sov_filter_form': SovFilterConfigForm(alliance_ids=alliance_ids),
         'janice_config': janice_config,
         'janice_form': JaniceConfigForm(instance=janice_config),
+        'app_version': __version__,
     }
     return render(request, 'miningtax/settings.html', context)
 
@@ -964,6 +1069,136 @@ def pilot_detail(request, character_id):
         cat_bucket['value'] += entry.total_value
         cat_bucket['tax'] += tax_info['tax_amount']
 
+    # Daily totals for the chart, assembled here because a template cannot
+    # divide and the bars need a share of the busiest day to size against.
+    #
+    # Stacked by ore category rather than by type: a month can touch dozens of
+    # types, which is more colours than anyone can tell apart, while the
+    # categories are the handful that tax rates are set on anyway. Excluded ore
+    # keeps its category colour at reduced opacity, so both questions — what was
+    # mined, and what was taxed — can be read off the same bar.
+    import calendar
+
+    # Fixed where it carries meaning, so R64 looks valuable and ice looks like
+    # ice; anything else is assigned from the remaining palette by name, which
+    # keeps a category's colour the same from one month to the next.
+    CATEGORY_COLOURS = {
+        'R64': '#c0392b', 'R32': '#e67e22', 'R16': '#f1c40f',
+        'R8': '#7f8c8d', 'R4': '#95a5a6',
+        'Ore': '#3498db', 'Ice': '#5dade2', 'Gas': '#48c9b0',
+        'Mercoxit': '#8e44ad', 'Default': '#566573',
+    }
+    SPARE_COLOURS = ['#16a085', '#27ae60', '#2980b9', '#d35400', '#a04000', '#6c3483']
+
+    def _colour_for(category):
+        if category in CATEGORY_COLOURS:
+            return CATEGORY_COLOURS[category]
+        return SPARE_COLOURS[sum(ord(c) for c in category) % len(SPARE_COLOURS)]
+
+    daily = {}
+    categories_seen = {}
+    for row in rows:
+        entry = row['entry']
+        day = entry.date.day
+        bucket = daily.setdefault(
+            day,
+            {'taxed': Decimal('0'), 'excluded': Decimal('0'), 'tax': Decimal('0'),
+             'segments': {}, 'ores': {}},
+        )
+
+        category = row['category']
+        categories_seen[category] = _colour_for(category)
+
+        if row['excluded']:
+            bucket['excluded'] += entry.total_value
+        else:
+            bucket['taxed'] += entry.total_value
+            bucket['tax'] += row['tax_amount']
+
+        seg = bucket['segments'].setdefault(
+            (category, row['excluded']), Decimal('0')
+        )
+        bucket['segments'][(category, row['excluded'])] = seg + entry.total_value
+
+        # What was mined, not just how much it came to. A total says the day was
+        # busy; the ore says whether it was the day someone is thinking of.
+        ore = bucket['ores'].setdefault(
+            entry.type_name or f'Type {entry.type_id}',
+            {'quantity': 0, 'value': Decimal('0')},
+        )
+        ore['quantity'] += entry.quantity
+        ore['value'] += entry.total_value
+
+    days_in_month = calendar.monthrange(year, month)[1]
+    busiest = max(
+        ((d['taxed'] + d['excluded']) for d in daily.values()), default=Decimal('0')
+    )
+
+    def _pct(value):
+        # Two percent floor: a segment of no height reads as missing data rather
+        # than as a small one, which is the opposite of what it means.
+        if not busiest or not value:
+            return 0
+        return max(int(value / busiest * 100), 2)
+
+    chart_days = []
+    for day in range(1, days_in_month + 1):
+        values = daily.get(day) or {
+            'taxed': Decimal('0'), 'excluded': Decimal('0'), 'tax': Decimal('0'),
+            'segments': {}, 'ores': {},
+        }
+        total = values['taxed'] + values['excluded']
+
+        # Largest at the bottom, so the eye reads the day's character first and
+        # the trimmings after.
+        segments = [
+            {
+                'category': category,
+                'excluded': excluded,
+                'value': value,
+                'height': _pct(value),
+                'colour': _colour_for(category),
+            }
+            for (category, excluded), value in sorted(
+                values['segments'].items(), key=lambda kv: kv[1], reverse=True
+            )
+        ]
+
+        # Capped: a tooltip long enough to scroll answers nothing, and the tail
+        # is rarely what anyone is checking.
+        top_ores = sorted(
+            values['ores'].items(), key=lambda kv: kv[1]['value'], reverse=True
+        )[:6]
+        remaining = len(values['ores']) - len(top_ores)
+
+        chart_days.append({
+            'day': day,
+            'total': total,
+            'taxed': values['taxed'],
+            'excluded': values['excluded'],
+            'tax': values['tax'],
+            'segments': segments,
+            'ores': [
+                {'name': name, 'quantity': v['quantity'], 'value': v['value']}
+                for name, v in top_ores
+            ],
+            'more_ores': remaining if remaining > 0 else 0,
+        })
+
+    active_days = sum(1 for d in chart_days if d['total'])
+    chart_stats = {
+        'active_days': active_days,
+        'days_in_month': days_in_month,
+        'peak': busiest,
+        'peak_day': next((d['day'] for d in chart_days if d['total'] == busiest and busiest), None),
+        'average': (totals['mined'] / active_days) if active_days else Decimal('0'),
+        'excluded_total': sum((d['excluded'] for d in chart_days), Decimal('0')),
+        # Half the busiest day, drawn as a reference line so bar heights can be
+        # read as amounts instead of only compared with one another.
+        'midpoint': busiest / 2 if busiest else Decimal('0'),
+        'legend': sorted(categories_seen.items()),
+    }
+
     # Assemble one row per character up front rather than looking values up in
     # the template — every character appears, including those with no mining
     # this month, which is exactly how an alt that never synced becomes visible.
@@ -990,6 +1225,9 @@ def pilot_detail(request, character_id):
         'viewing_own': is_own_character,
         'characters': characters,
         'character_rows': character_rows,
+        'chart_days': chart_days,
+        'chart_peak': busiest,
+        'chart_stats': chart_stats,
         'rows': rows,
         'totals': totals,
         'per_character': per_character,
