@@ -1,6 +1,11 @@
 # Changelog
 
 
+## [0.10.13] - 2026-09.01
+
+### Fixed
+- **The Alliance Billing CSV export had the same problem the PDF export was fixed for in 0.10.12: it recalculated the month live instead of reading the daily snapshot.** `export_alliance_billing()` called `calculate_alliance_billing()` directly, so it could show a different total than the page it was exported from, or than the PDF sitting next to it, once mining data landed between the last snapshot refresh and the download. Now reads from the same `AllianceBillingRecord` snapshot as the page and the PDF/ZIP exports, using the same `_record_to_corp_data()` conversion — one source, so the three can no longer disagree. `export_my_ledger()` and `export_pilot_ledger()` were unaffected; they read individual ledger entries directly and have no cached counterpart to drift from
+
 ## [0.10.12] - 2026-08-31
 
 ### Added

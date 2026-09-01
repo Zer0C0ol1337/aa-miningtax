@@ -2,8 +2,14 @@
 CSV exports, alongside the existing PDF invoices.
 
 PDFs are the document you send a corp; CSV is what you open in a spreadsheet to
-check a figure or build your own summary. Both read the same billing functions,
-so a CSV can never disagree with the invoice generated from the same month.
+check a figure or build your own summary. export_alliance_billing() reads from
+the same AllianceBillingRecord snapshot the Alliance Billing page and the PDF
+export both use (since 0.10.10/0.10.12), so none of the three can disagree about
+a corp's monthly total.
+
+export_my_ledger() and export_pilot_ledger() are unaffected by that — they list
+individual MiningLedgerEntry rows with tax resolved per entry, which has no
+cached counterpart to drift from.
 
 Every view reuses the access rules of the page it exports, rather than defining
 its own — an export must not become a way around a permission check.
@@ -17,8 +23,9 @@ from django.shortcuts import get_object_or_404
 
 from allianceauth.eveonline.models import EveCharacter
 
-from .billing import calculate_alliance_billing, calculate_entry_tax
-from .models import MiningLedgerEntry
+from .billing import calculate_entry_tax
+from .models import MiningLedgerEntry, AllianceBillingRecord
+from .pdf_views import _record_to_corp_data
 from .views import (
     check_access, has_basic_access, has_officer_access,
     own_corporation_id, is_corp_scoped, _corp_for_entry,
@@ -143,6 +150,13 @@ def export_alliance_billing(request):
     The billing summary for a month: one section per corp with its category
     breakdown and member totals, then an alliance total.
 
+    Reads from the same AllianceBillingRecord snapshot the Alliance Billing
+    page and the PDF/ZIP exports use, rather than recalculating the month live
+    — the same fix applied to pdf_views.py in 0.10.12, for the same reason: a
+    second live-calculation path for a figure the page already shows from a
+    daily snapshot can only ever drift from it, given enough time between the
+    last snapshot refresh and the export being downloaded.
+
     Shaped for reading rather than for parsing, since it mirrors a page that is
     itself a summary. Anyone wanting per-entry data is better served by the
     ledger export, which is one flat table.
@@ -151,17 +165,33 @@ def export_alliance_billing(request):
     year = int(request.GET.get('year', today.year))
     month = int(request.GET.get('month', today.month))
 
-    data = calculate_alliance_billing(year, month)
-
     restricted = own_corporation_id(request.user) if is_corp_scoped(request.user) else None
+
+    records = AllianceBillingRecord.objects.filter(
+        year=year, month=month
+    ).select_related('corporation')
+
+    if not records.exists():
+        from .billing import save_billing_records_for_month
+        save_billing_records_for_month(year, month)
+        records = AllianceBillingRecord.objects.filter(
+            year=year, month=month
+        ).select_related('corporation')
+
+    if restricted:
+        records = records.filter(corporation__corporation_id=restricted)
 
     def rows():
         yield [f'Mining Tax — {year}-{month:02d}']
         yield []
 
-        for corp_id, corp in data['corps'].items():
-            if restricted and corp_id != restricted:
-                continue
+        total_mined = Decimal('0')
+        total_tax = Decimal('0')
+
+        for record in records:
+            corp = _record_to_corp_data(record)
+            total_mined += corp['total_mined']
+            total_tax += corp['total_tax']
 
             yield ['Corporation', corp['corp_name']]
             yield ['Total mined (ISK)', _fmt(corp['total_mined'])]
@@ -187,8 +217,8 @@ def export_alliance_billing(request):
         # Only meaningful across the whole alliance, so it is left out when the
         # view is restricted to a single corporation.
         if not restricted:
-            yield ['Alliance total mined (ISK)', _fmt(data['totals']['mined'])]
-            yield ['Alliance total tax (ISK)', _fmt(data['totals']['tax'])]
+            yield ['Alliance total mined (ISK)', _fmt(total_mined)]
+            yield ['Alliance total tax (ISK)', _fmt(total_tax)]
 
     filename = f'alliance_billing_{year}_{month:02d}.csv'
     return _csv_response(filename, rows())
