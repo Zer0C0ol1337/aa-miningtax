@@ -13,6 +13,7 @@ urlpatterns = [
     path('alliance/paid/<int:corp_id>/', views.mark_paid, name='mark_paid'),
     path('alliance/unpaid/<int:corp_id>/', views.mark_unpaid, name='mark_unpaid'),
     path('alliance/check-payments/', views.check_payments_now, name='check_payments_now'),
+    path('alliance/rebuild-snapshot/', views.rebuild_billing_snapshot, name='rebuild_billing_snapshot'),
     path('alliance/pilot/<int:character_id>/', views.pilot_detail, name='pilot_detail'),
 
     path('settings/', views.settings_view, name='settings'),

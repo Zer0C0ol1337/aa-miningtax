@@ -17,6 +17,20 @@
                class="btn btn-sm btn-outline-primary">
                 💰 {% trans "Check Payments Now" %}
             </a>
+            {% comment %}
+              Rebuilds the AllianceBillingRecord snapshot (totals, categories,
+              members) for the month currently being viewed. Needed because the
+              daily sync only ever touches *today's* month — a closed month
+              whose snapshot predates a logic or schema change (e.g.
+              member_snapshot being added) has no other automatic path to catch
+              up. Runs as a task so the result shows up in the task monitor
+              instead of being an invisible thing a page load did.
+            {% endcomment %}
+            <a href="{% url 'miningtax:rebuild_billing_snapshot' %}?year={{ year }}&month={{ month }}"
+               class="btn btn-sm btn-outline-warning"
+               onclick="return confirm('{% trans "Rebuild the billing snapshot for" %} {{ month }}/{{ year }}? {% trans "Paid records are left untouched." %}')">
+                🔄 {% trans "Rebuild Snapshot" %}
+            </a>
             <a href="{% url 'miningtax:download_all_corps_zip' %}?year={{ year }}&month={{ month }}"
                class="btn btn-sm btn-outline-success">
                 📦 {% trans "Download All as ZIP" %}

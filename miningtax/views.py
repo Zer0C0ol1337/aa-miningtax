@@ -505,6 +505,33 @@ def check_payments_now(request):
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
 
+@check_access(has_full_officer_access)
+def rebuild_billing_snapshot(request):
+    """
+    Rebuilds the billing snapshot for a given month as a background task.
+
+    Exists because the daily sync only ever recalculates the *current* month —
+    a closed month whose snapshot predates a schema/logic change (member_snapshot
+    being added, a tax-rule fix, etc.) has no automatic path to pick that up.
+    Running as a task rather than inline so it's visible in the task monitor
+    instead of being an invisible thing that happened during a page load.
+    """
+    from .tasks import rebuild_billing_snapshot_task
+
+    year = int(request.GET.get('year', date.today().year))
+    month = int(request.GET.get('month', date.today().month))
+
+    logger.info(f'{request.user.username}: billing snapshot rebuild queued for {month:02d}/{year}')
+    rebuild_billing_snapshot_task.delay(year, month, requested_by=request.user.username)
+
+    messages.success(
+        request,
+        f'✅ Rebuilding the billing snapshot for {month:02d}/{year} in the '
+        f'background — check the task monitor or refresh this page shortly.'
+    )
+    return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
+
+
 # ─── SETTINGS-VIEWS ───────────────────────────────────────────────────────────
 
 @check_access(has_full_officer_access)

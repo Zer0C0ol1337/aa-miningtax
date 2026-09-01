@@ -242,3 +242,45 @@ def register_alliance_corps_task(alliance_id, requested_by=None):
     result = f'{registered} new, {already_present} already present, {failed} failed'
     logger.info(f'Alliance {alliance_id} corps registered by {requested_by or "unknown"}: {result}')
     return result
+
+
+@shared_task
+def rebuild_billing_snapshot_task(year, month, requested_by=None):
+    """
+    Rebuilds the AllianceBillingRecord snapshot (totals, category breakdown,
+    per-member figures) for one specific month.
+
+    Backs the "Rebuild Snapshot" button on the Alliance Billing page. Needed
+    for any month other than the current one: the daily sync only ever
+    recalculates today's month, so a closed month whose snapshot predates a
+    schema or logic change (e.g. member_snapshot being added in 0.10.10) has
+    no other way to pick that up short of the next time that same month
+    number rolls around a year later.
+
+    Deletes and recreates rather than updating in place, mirroring what an
+    officer running the equivalent shell command by hand would have done —
+    the difference is this happens through a tracked, visible task instead.
+    Already-paid records for the month are left untouched: save_billing_record()
+    skips a corp once paid=True is set, so a finalised invoice can't be
+    silently rewritten by a rebuild.
+    """
+    from .models import AllianceBillingRecord
+    from .billing import save_billing_records_for_month
+
+    existing = AllianceBillingRecord.objects.filter(year=year, month=month)
+    paid_count = existing.filter(paid=True).count()
+    unpaid_deleted, _ = existing.filter(paid=False).delete()
+
+    saved = save_billing_records_for_month(year, month)
+
+    result = (
+        f'{saved} record(s) rebuilt for {month:02d}/{year} '
+        f'({unpaid_deleted} unpaid record(s) recreated, '
+        f'{paid_count} paid record(s) left untouched)'
+    )
+    logger.info(
+        f'Billing snapshot rebuild for {month:02d}/{year}' +
+        (f' by {requested_by}' if requested_by else '') +
+        f' complete: {result}'
+    )
+    return result
