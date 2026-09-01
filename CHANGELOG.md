@@ -1,7 +1,7 @@
 # Changelog
 
 
-## [0.10.11] - 2026-08-31
+## [0.10.12] - 2026-08-31
 
 ### Added
 - **"Rebuild Snapshot" button on Alliance Billing.** The daily sync only ever recalculates the *current* month's `AllianceBillingRecord`, so a closed month whose snapshot predates a schema or logic change had no automatic way to catch up — the August snapshot, for instance, never picked up `member_snapshot` after it was added in 0.10.10, and would have stayed that way until August rolled around again next year. The button rebuilds the snapshot for whichever month is on screen as a background task, visible in the task monitor; paid records for that month are left untouched
