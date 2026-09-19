@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    General, OreCategory, TaxRate, MiningLedgerEntry, AllianceMoon,
+    General, OreCategory, TaxRate, TaxRateHistory, MiningLedgerEntry, AllianceMoon,
     FleetSession, MoonRental, AllianceBillingRecord, TaxExemption,
     OreCategoryRule, TaxableScope
 )
@@ -20,11 +20,73 @@ class GeneralAdmin(admin.ModelAdmin):
         return False
 
 
-# Steuersätze direkt in der Liste editierbar (Inline-Edit ohne extra Klick)
+# Steuersätze direkt in der Liste editierbar (Inline-Edit ohne extra Klick).
+#
+# save_model() und save_formset() sind überschrieben, damit eine Änderung —
+# egal ob über das Inline-Feld in der Liste oder die normale Detail-Ansicht —
+# durch billing.set_tax_rate() läuft statt Django's Standardverhalten (schreibt
+# nur TaxRate.tax_rate). Ohne das würde eine im Admin geänderte Rate keine
+# TaxRateHistory-Zeile bekommen und beim nächsten Neuberechnen eines
+# vergangenen Monats rückwirkend angewendet — genau das, was set_tax_rate()
+# verhindert. Beide Codepfade wurden mit einem echten Django-Formset/-Form
+# getestet, nicht nur nach Dokumentation angenommen.
 @admin.register(TaxRate)
 class TaxRateAdmin(admin.ModelAdmin):
     list_display = ('ore_category', 'tax_rate', 'description')
     list_editable = ('tax_rate',)
+
+    def save_model(self, request, obj, form, change):
+        """Detail-page save path (add/change form, not the list_editable one)."""
+        if change and 'tax_rate' in form.changed_data:
+            from .billing import set_tax_rate
+            set_tax_rate(obj.ore_category, obj.tax_rate)
+        super().save_model(request, obj, form, change)
+
+    def save_formset(self, request, form, formset, change):
+        """
+        list_editable inline-edit path: Django saves the whole changelist
+        formset at once here rather than calling save_model() per row, so the
+        same set_tax_rate() routing has to happen separately or an inline edit
+        would silently skip the history.
+
+        formset.changed_objects is populated by formset.save(commit=False):
+        a list of (instance, [changed_field_names]) for rows that actually
+        changed — verified against a live Django formset before relying on it,
+        since guessing at admin internals is how subtle bugs get shipped.
+        """
+        instances = formset.save(commit=False)
+        changed_fields_by_pk = {
+            obj.pk: fields for obj, fields in formset.changed_objects
+        }
+        from .billing import set_tax_rate
+        for obj in instances:
+            if 'tax_rate' in changed_fields_by_pk.get(obj.pk, []):
+                set_tax_rate(obj.ore_category, obj.tax_rate)
+            obj.save()
+        formset.save_m2m()
+        for obj in formset.deleted_objects:
+            obj.delete()
+
+
+# Read-only view of every rate change ever made — the audit trail that makes
+# set_tax_rate() trustworthy. Never editable here: the only correct way to add
+# a row is through set_tax_rate(), so the admin path is intentionally closed
+# rather than offering a second way to write history that could disagree with
+# what get_tax_rate() actually used.
+@admin.register(TaxRateHistory)
+class TaxRateHistoryAdmin(admin.ModelAdmin):
+    list_display = ('ore_category', 'tax_rate', 'effective_from', 'created_at')
+    list_filter = ('ore_category',)
+    ordering = ('-effective_from',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 # Alliance-Monde mit Filter nach Typ (public/event)

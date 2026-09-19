@@ -32,6 +32,7 @@ urlpatterns = [
     path('settings/sov-filter/<int:pk>/delete/', views.settings_delete_sov_filter, name='settings_delete_sov_filter'),
     path('settings/sov-filter/sync-now/', views.settings_sync_sov_now, name='settings_sync_sov_now'),
     path('settings/janice/save/', views.settings_save_janice, name='settings_save_janice'),
+    path('settings/payment-code/save/', views.settings_save_payment_code, name='settings_save_payment_code'),
     path('settings/ore-categories/sync/', views.settings_sync_ore_categories, name='settings_sync_ore_categories'),
     path('settings/repair-names/', views.settings_repair_names, name='settings_repair_names'),
     path('settings/update-prices/', views.settings_update_prices, name='settings_update_prices'),

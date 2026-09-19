@@ -74,6 +74,50 @@
     {# TAB 1: TAX RATES #}
     <div class="tab-pane fade show active" id="tab-taxrates">
 
+      {% comment %}
+        Controls when a corp's payment reference code becomes visible for the
+        previous month's billing (day of the following month + hour UTC), and
+        what the hint text says before that. Used to be hardcoded — day 2,
+        11:00 UTC, a fixed sentence — so any change meant a new release.
+      {% endcomment %}
+      <div class="card mb-4">
+        <div class="card-header"><strong>{% trans "Payment Code Timing" %}</strong></div>
+        <div class="card-body">
+          <form method="post" action="{% url 'miningtax:settings_save_payment_code' %}">
+            {% csrf_token %}
+            <div class="row g-3">
+              <div class="col-md-3">
+                <label class="form-label">{% trans "Reveal Day" %}</label>
+                {{ payment_code_form.reveal_day }}
+                <small class="text-muted d-block mt-1">{% trans "1–28, of the month AFTER the one being billed." %}</small>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">{% trans "Hour (UTC)" %}</label>
+                {{ payment_code_form.reveal_hour_utc }}
+              </div>
+            </div>
+            <div class="row g-3 mt-1">
+              <div class="col-12">
+                <label class="form-label">{% trans "Hint Text (shown before the reveal)" %}</label>
+                {{ payment_code_form.hint_text }}
+                <small class="text-muted d-block mt-1">
+                  {% trans "Use {reveal_day} and {reveal_time} as placeholders — filled in automatically from the two fields above." %}
+                </small>
+              </div>
+            </div>
+            <div class="mt-3">
+              <button type="submit" class="btn btn-sm btn-outline-success">
+                <i class="fas fa-save"></i> {% trans "Save" %}
+              </button>
+            </div>
+          </form>
+          <div class="mt-3 text-muted small">
+            <i class="fas fa-info-circle"></i>
+            {% blocktrans with day=payment_code_config.reveal_day hour=payment_code_config.reveal_hour_utc %}Currently: revealed on day {{ day }} of the following month, {{ hour }}:00 UTC.{% endblocktrans %}
+          </div>
+        </div>
+      </div>
+
       <div class="card mb-4">
         <div class="card-header"><strong>{% trans "Ore Type List" %}</strong></div>
         <div class="card-body">

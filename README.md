@@ -1,13 +1,13 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.10**
+**Version 0.10.14**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
 ## Features
 
 - **Personal mining dashboard** — this month's ledger entries with calculated tax, plus a daily summary card for yesterday (total value, tax, top 5 ores by value) so a quick check doesn't require scrolling the full table
-- **Alliance-wide billing overview** — all corps, all members (grouped by main character), tax by ore category, moon rental fees, and total due. Reads from a daily-refreshed snapshot rather than recalculating the month live, so the page loads instantly instead of iterating the full ledger on every view
+- **Alliance-wide billing overview** — all corps, all members (grouped by main character, sorted alphabetically), tax by ore category, moon rental fees, and total due. Reads from a daily-refreshed snapshot rather than recalculating the month live, so the page loads instantly instead of iterating the full ledger on every view. Corporations outside the taxable scope (left the alliance, never in it) and corporations owing nothing this month are left off the list entirely rather than shown at 0 ISK
 - **Configurable tax rates** per ore category (R4 / R8 / R16 / R32 / R64 / Ice / Ore / Gas / Mercoxit), plus any category you define yourself
 - **Complete ore list, maintained by ESI** — every mineable type is imported and classified by its EVE group, so a newly introduced ore is never taxed at the Default rate unnoticed. The Settings page reports how many mined types still lack a category
 - **Category rules** — assign ore to a category by name, ahead of EVE's own grouping: abyssal ore and Prismaticite sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches. A category can also be locked so the automatic import leaves it alone
@@ -26,7 +26,7 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 - **Corp-scoped billing access** — the `corp_billing` permission gives read-only billing for the holder's own corporation only (based on their main character's corporation); no automatic access is granted based on in-game CEO status. Full Settings and alliance-wide actions still require the `mining_officer` permission
 - **Background sync** — manual sync and payment checks run as Celery tasks, avoiding request timeouts on large datasets
 - **Permissions** — `basic_access` (dashboard), `mining_officer` (billing + settings); superusers always have full access
-- **i18n** — English by default; German fully translated; 6 more languages scaffolded
+- **i18n** — the web pages are English by default with German fully translated and 6 more languages scaffolded. PDF invoices are English-only for now: every string went through a full rewrite to use `gettext()` in 0.10.14 (they were hardcoded German before that), so they're ready for a `.po` translation but none exists yet
 - **Extensive logging** — every sync, payment check, and admin action is logged with context, no shell debugging required
 
 ---
@@ -198,6 +198,10 @@ Also imports the full ore list from ESI on demand, reports how many mined types 
 
 Per-category tax rate, including a dedicated **Mercoxit** category. `0.00%` is a valid, deliberate value (e.g. tax-free event ores) and is respected as-is.
 
+**Rate changes are never retroactive.** Every change is recorded in `TaxRateHistory` with the date it takes effect; a ledger entry is taxed at whatever rate was in force on its own date, not on today's rate. Raising R64 from 10% to 15% mid-month taxes the rest of the month at 15% while everything already mined keeps the 10% it was actually taxed under — even when that month gets recalculated later. The one exception is creating a rate for a category that never had one: since everything mined in it so far ran on the Default rate by accident rather than by choice, the new rate is backdated to the start of the current month instead of today.
+
+**Set the day of the month (1–28), hour (UTC), and hint text for when a corp's payment reference code becomes visible from a card in this tab** — see [Payment Code Timing](#payment-code-timing) below for what that controls.
+
 ### Moon Rentals
 A corp renting a moon pays a flat monthly fee; mining there becomes tax-free for that corp. **Structure Name** must exactly match the `solar_system_name` value seen in the ledger.
 
@@ -340,7 +344,13 @@ Use "Reset to Unpaid" to correct a mismatch, e.g. after testing.
 
 ### Payment Code Timing
 
-Each corp's payment reference code stays hidden on the Alliance Billing page until **11:00 UTC (EVE downtime) on the 2nd of the following month**. A billing record can exist — and the page can render — before that point, since the record itself is written by the daily snapshot sync; the code specifically waits so it's never handed to a payer before the closing days of the month have had a full sync cycle to land. Before the reveal time, the code column simply shows nothing for that corp.
+Each corp's payment reference code stays hidden on the Alliance Billing page until a configurable day and hour of the following month — a **day (1–28)** and an **hour (UTC)**, set from a card at the top of the Tax Rates tab, defaulting to day 2 at 11:00 UTC (EVE downtime). A billing record can exist — and the page can render — before that point, since the record itself is written by the daily snapshot sync; the reveal time specifically waits so the code is never handed to a payer before the closing days of the month have had a full sync cycle to land. Before the reveal time, the hint text configured in the same card is shown instead — it accepts `{reveal_day}` and `{reveal_time}` placeholders, filled in automatically from the day/hour fields, and leaves an unrecognised placeholder visible as literal text rather than failing.
+
+---
+
+## Corporation Join Date
+
+Mining from before a corporation joined its current alliance is excluded from tax, the same way mining outside the taxable scope is. Reads the corporation's public `/alliancehistory/` from ESI (no token required) to find when it joined; anything mined before that date is zero-rated regardless of category, exemptions, or anything else. Cached for a day, since a join date only changes on an actual alliance switch — an officer changing this by, say, disbanding and rejoining under a new corp would see the new date reflected within a day, or immediately after a Rebuild Snapshot if the affected month is recalculated. If ESI can't be reached or the corp has no alliance history, mining is taxed as normal rather than silently exempted — the same fail-safe direction used for a corporation that can't be confirmed to be in scope at all.
 
 ---
 

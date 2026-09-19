@@ -52,6 +52,40 @@ class TaxRate(models.Model):
         return f"{self.ore_category}: {self.tax_rate}%"
 
 
+# One row per rate change, so a rate is never applied retroactively. Editing
+# TaxRate.tax_rate in Settings/admin also writes one of these (see
+# billing.set_tax_rate()), stamped with the day the change takes effect —
+# never the day it was clicked, so a change made today at 23:00 and one made
+# tomorrow at 01:00 land on two different days rather than both being "now".
+#
+# calculate_entry_tax() looks up the rate that was in force on the ledger
+# entry's OWN date, not whatever TaxRate currently holds. Without this, raising
+# a rate today would silently re-tax every past day of the month the next time
+# that month's billing was recalculated — which is exactly the rewriting of
+# history a tax system cannot do.
+class TaxRateHistory(models.Model):
+    ore_category = models.CharField(max_length=50, db_index=True)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2)
+    # The first day this rate applies to. Inclusive: a ledger entry dated
+    # exactly effective_from uses this rate, not the one before it.
+    effective_from = models.DateField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        default_permissions = ()
+        ordering = ('ore_category', '-effective_from')
+        verbose_name = 'tax rate history'
+        verbose_name_plural = 'tax rate history'
+        # Setting the same category's rate twice on the same day would leave
+        # two rows both claiming to be what applied that day, with no way to
+        # tell which one calculate_entry_tax() should have picked — so the
+        # second edit on a day replaces the first rather than stacking.
+        unique_together = ('ore_category', 'effective_from')
+
+    def __str__(self):
+        return f"{self.ore_category}: {self.tax_rate}% from {self.effective_from}"
+
+
 class MiningLedgerEntry(models.Model):
     character = models.ForeignKey(EveCharacter, on_delete=models.CASCADE, related_name='mining_entries')
     date = models.DateField()
@@ -251,6 +285,72 @@ class JaniceConfig(models.Model):
         # callers never have to handle DoesNotExist.
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+# Singleton config for when a corp's payment reference code becomes visible on
+# the Alliance Billing page, and what the hint text says before that. Both used
+# to be hardcoded (day 2 of the following month, 11:00 UTC, a fixed English
+# sentence) — every time the alliance wanted a different day, a different
+# deadline mentioned in the text, or just different wording, that meant a code
+# change and a new release. This makes it a setting instead: changed once here,
+# it applies to every month from then on until changed again.
+class PaymentCodeSettings(models.Model):
+    reveal_day = models.PositiveSmallIntegerField(
+        default=2,
+        help_text='Day of the month (1-28) the payment code becomes visible for the PREVIOUS month\'s billing. '
+                   'Kept to 28 or below so it exists in every month, including February.'
+    )
+    reveal_hour_utc = models.PositiveSmallIntegerField(
+        default=11,
+        help_text='Hour (0-23, UTC) on that day the code is revealed. EVE downtime is around 11:00 UTC, '
+                   'which is why that was the original default — set to match whenever your data is expected to be complete.'
+    )
+    hint_text = models.TextField(
+        default='The payment code will be available from the {reveal_day} of next month.',
+        help_text='Shown instead of the code before the reveal time. Use {reveal_day} and {reveal_time} as '
+                   'placeholders — both are filled in with the values above, so the text stays correct if you '
+                   'change the day or time later without having to edit this field again.'
+    )
+
+    class Meta:
+        default_permissions = ()
+        verbose_name = 'payment code settings'
+        verbose_name_plural = 'payment code settings'
+
+    def __str__(self):
+        return f'Payment code reveal: day {self.reveal_day}, {self.reveal_hour_utc:02d}:00 UTC'
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def rendered_hint(self):
+        """
+        hint_text with its placeholders filled in.
+
+        str.format_map() with a dict that returns a literal "{name}" for any
+        key it doesn't recognise, rather than a plain .format() call: an
+        officer typing a placeholder that doesn't exist (a typo, or one from
+        an older version of this text) must not take the whole billing page
+        down with a KeyError — verified against exactly that case before
+        relying on it. The two real placeholders still substitute correctly;
+        anything else is left visible as-is rather than silently dropped, so
+        a mistake is obvious rather than hidden.
+
+        Not Django's template engine: this text is officer-authored free text
+        stored in the database, and running it through the full template
+        engine would let {% ... %} tags execute arbitrary template logic.
+        """
+        class _LeaveUnknown(dict):
+            def __missing__(self, key):
+                return '{' + key + '}'
+
+        values = _LeaveUnknown(
+            reveal_day=self.reveal_day,
+            reveal_time=f'{self.reveal_hour_utc:02d}:00 UTC',
+        )
+        return self.hint_text.format_map(values)
 
 
 # Exempts either a single character OR an entire corporation from mining tax.

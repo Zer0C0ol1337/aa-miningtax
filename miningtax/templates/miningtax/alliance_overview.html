@@ -162,7 +162,8 @@
                 {% else %}
                 <div class="alert alert-light text-muted py-2 small">
                     <i class="fas fa-clock"></i>
-                    {% trans "The payment code will be available from the 2nd of next month." %}
+                    {# Configured in Settings (day, hour UTC, and this text itself) rather than fixed here. #}
+                    {{ payment_hint }}
                 </div>
                 {% endif %}
                 {% endif %}

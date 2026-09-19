@@ -6,7 +6,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from .models import (
-    OreCategory, TaxRate, FleetSession, AllianceMoon, MoonRental,
+    OreCategory, TaxRate, TaxRateHistory, FleetSession, AllianceMoon, MoonRental,
     AllianceBillingRecord, TaxExemption, OreCategoryRule, TaxableScope,
 )
 from .services import STRUCTURE_ID_THRESHOLD
@@ -174,6 +174,7 @@ SCOPE_CACHE_KEY = 'miningtax:taxable_scope'
 _CACHE_KEYS = (
     'miningtax:lookup:ore_categories',
     'miningtax:lookup:tax_rates',
+    'miningtax:lookup:tax_rate_history',
     'miningtax:lookup:exemptions',
     'miningtax:lookup:fleet_sessions',
     'miningtax:lookup:tax_free_moons',
@@ -204,12 +205,41 @@ def _ore_categories():
 
 
 def _tax_rates():
+    """
+    Current TaxRate.tax_rate per category — used only where "today's rate"
+    genuinely is what's wanted (Settings display, the "categories without a
+    rate" health check), never for taxing a specific ledger entry. Billing
+    itself goes through _tax_rate_history() so a rate change never reaches
+    into the past.
+    """
     return _cached(
         'miningtax:lookup:tax_rates',
         lambda: {
             c: r for c, r in TaxRate.objects.values_list('ore_category', 'tax_rate')
         },
     )
+
+
+def _tax_rate_history():
+    """
+    {category: [(effective_from, rate), ...]} for every category that has ever
+    had a rate change, each list sorted newest-first.
+
+    Loaded whole and cached rather than queried per lookup: the table stays
+    small (one row per rate change, not per ledger entry), and get_tax_rate()
+    is called once per entry — querying it per entry would reopen exactly the
+    N+1 problem the lookup-cache layer above exists to avoid.
+    """
+    def build():
+        history = {}
+        rows = TaxRateHistory.objects.order_by(
+            'ore_category', '-effective_from'
+        ).values_list('ore_category', 'effective_from', 'tax_rate')
+        for category, effective_from, rate in rows:
+            history.setdefault(category, []).append((effective_from, rate))
+        return history
+
+    return _cached('miningtax:lookup:tax_rate_history', build)
 
 
 def _exemptions():
@@ -360,11 +390,80 @@ def get_ore_category(type_id):
     return derived
 
 
-def get_tax_rate(category):
+def get_tax_rate(category, entry_date=None):
+    """
+    The rate for a category as it stood on entry_date — not today's rate.
+
+    A rate change must never reach into the past: raising R64 from 10% to 15%
+    today should tax today's ore at 15% while everything mined before today
+    keeps the 10% it was actually taxed under, even when that earlier month
+    gets recalculated later (a "Rebuild Snapshot" click, the daily sync
+    re-running). Without entry_date, every historical recalculation would
+    silently apply whatever rate happens to be current right now.
+
+    entry_date is optional only for call sites that never touch a ledger entry
+    (e.g. displaying "today's rate" somewhere) — every caller that is pricing
+    an actual MiningLedgerEntry must pass its date. Falls back to today when
+    omitted, and falls back further to the live TaxRate table when a category
+    has no history at all yet: a category can exist without a single recorded
+    change either because it predates TaxRateHistory (the migration seeds one
+    row per existing TaxRate, so this should be rare) or because it was just
+    created and never explicitly re-rated.
+    """
+    if entry_date is None:
+        entry_date = timezone.now().date()
+
+    history = _tax_rate_history()
+
+    for cat in (category, 'Default'):
+        for effective_from, rate in history.get(cat, []):
+            if effective_from <= entry_date:
+                return rate
+
+    # No history row applies (none exists yet, or all of them postdate
+    # entry_date, which would only happen for ore mined before the plugin's
+    # own tax-rate history began). Live TaxRate is the honest last resort.
     rates = _tax_rates()
     if category in rates:
         return rates[category]
     return rates.get('Default', DEFAULT_TAX_RATE)
+
+
+def set_tax_rate(category, new_rate, effective_from=None):
+    """
+    The one correct way to change a tax rate. Updates TaxRate (so Settings/
+    admin keep showing "today's rate" the way they always have) AND records
+    the change in TaxRateHistory with the date it takes effect — this second
+    part is what makes the change non-retroactive; skipping it and writing
+    TaxRate.tax_rate directly would silently re-tax every past ledger entry
+    the next time that month's billing is recalculated.
+
+    effective_from defaults to today: a rate changed right now applies from
+    today onward, not from whenever someone next clicks "Rebuild Snapshot".
+    An officer can backdate or postdate it by passing an explicit date instead
+    (the Settings form exposes today as the default with the field editable).
+    """
+    if effective_from is None:
+        effective_from = timezone.now().date()
+
+    TaxRate.objects.update_or_create(
+        ore_category=category,
+        defaults={'tax_rate': new_rate},
+    )
+
+    # update_or_create rather than create: setting the same category's rate
+    # twice on the same day (e.g. correcting a typo minutes later) replaces
+    # that day's entry instead of leaving two rows both claiming to be what
+    # applied — TaxRateHistory's unique_together enforces this at the DB level
+    # too, this just makes fixing a same-day mistake not require a delete first.
+    TaxRateHistory.objects.update_or_create(
+        ore_category=category,
+        effective_from=effective_from,
+        defaults={'tax_rate': new_rate},
+    )
+
+    cache.delete('miningtax:lookup:tax_rates')
+    cache.delete('miningtax:lookup:tax_rate_history')
 
 
 def is_excluded_by_fleet_session(entry, ore_category):
@@ -422,6 +521,117 @@ def is_excluded_by_moon_rental(entry, corporation):
     return bool(rented) and entry.solar_system_name.strip().lower() in rented
 
 
+# One day: a corp's alliance join date changes only on an actual alliance
+# switch, which is rare and noticed immediately by an officer if it matters —
+# unlike the 60-second billing caches above, which exist to survive a burst of
+# page views, not to track something that moves this slowly.
+CORP_JOIN_DATE_CACHE_TTL = 60 * 60 * 24
+
+
+def get_corp_join_date(corporation_id):
+    """
+    The date the corporation joined its CURRENT alliance, or None if that
+    can't be determined (not in an alliance, ESI unreachable, or the corp has
+    never been in one).
+
+    Reads /corporations/{id}/alliancehistory/ — public, no token needed. ESI
+    has changed this endpoint's shape between versions: v1 nests alliance_id
+    under an "alliance" sub-object, v2 has it at the top level. Both are
+    handled here rather than pinning a version, since django-esi resolves
+    "latest" for public endpoints and which one comes back isn't something
+    this code controls.
+
+    The current alliance's row is the one with the highest record_id — ESI
+    documents record_id specifically as the field to use when dates might be
+    ambiguous, rather than trusting start_date/is_deleted ordering.
+
+    Returns None on any failure. A join date this function can't determine is
+    treated as "not applicable" by the caller, which means the mining is
+    taxed rather than exempted — the same reasoning is_corp_outside_taxable_
+    scope() applies to an unconfirmable corp: of the two ways to be wrong,
+    quietly not taxing a corp that should be taxed is the one people notice
+    and resent, so an unknown answer defaults to taxing.
+    """
+    cache_key = f'miningtax:corp_join_date:{corporation_id}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        # cache.get can't distinguish "not cached" from "cached as None", so a
+        # sentinel string stands in for the negative result.
+        return None if cached == 'none' else cached
+
+    from .services import _get_esi_client
+    from esi.exceptions import HTTPNotModified
+
+    esi = _get_esi_client()
+
+    def _fetch(force=False):
+        return esi.client.Corporation.GetCorporationsCorporationIdAllianceHistory(
+            corporation_id=corporation_id
+        ).results(force_refresh=force)
+
+    try:
+        try:
+            history = _fetch()
+        except HTTPNotModified:
+            history = _fetch(force=True)
+    except Exception as e:
+        logger.warning(f'Could not fetch alliance history for corp {corporation_id}: {e}')
+        return None
+
+    if not history:
+        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
+        return None
+
+    def _row_alliance_id(row):
+        # v1 nests it under .alliance.alliance_id, v2 puts it directly on the
+        # row — try both rather than assuming which one django-esi returned.
+        nested = getattr(row, 'alliance', None)
+        if nested is not None:
+            return getattr(nested, 'alliance_id', None)
+        return getattr(row, 'alliance_id', None)
+
+    current = max(
+        (row for row in history if _row_alliance_id(row)),
+        key=lambda row: getattr(row, 'record_id', 0),
+        default=None,
+    )
+
+    if current is None:
+        # Every row in the history is a departure with no alliance (is_deleted
+        # rows, or gaps between alliances) — the corp is not currently in one.
+        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
+        return None
+
+    start_date = getattr(current, 'start_date', None)
+    if start_date is None:
+        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
+        return None
+
+    join_date = start_date.date() if hasattr(start_date, 'date') else start_date
+    cache.set(cache_key, join_date, CORP_JOIN_DATE_CACHE_TTL)
+    return join_date
+
+
+def is_before_corp_join_date(entry, corporation):
+    """
+    True when the entry's date predates the corporation's current alliance
+    membership — mining that happened before the corp (and so the alliance)
+    had any claim on it, e.g. a pilot's history synced from before their corp
+    joined, or a corp whose sync ran before an officer noticed it had just
+    joined.
+
+    Judged on the corporation of the character who mined it, same as every
+    other exclusion here — not on the individual character's own join date,
+    since only the corp's alliance membership was asked for.
+    """
+    if not corporation:
+        return False
+    join_date = get_corp_join_date(corporation.corporation_id)
+    if join_date is None:
+        return False
+    return entry.date < join_date
+
+
 def _get_main_character(character):
     """
     The main character behind a given character, via
@@ -461,32 +671,25 @@ def _taxable_scope():
     return data
 
 
-def is_outside_taxable_scope(entry):
+def is_corp_outside_taxable_scope(corp_id, corp_name=''):
     """
-    True when the character who mined this is somewhere the alliance does not
-    tax — a high-sec alt, a trade character, a corp outside the alliance.
+    True when a corporation itself is somewhere the alliance does not tax —
+    the corp-level core of is_outside_taxable_scope() below, usable directly
+    when only a corp_id is at hand (e.g. deciding whether to show a corp on
+    the Alliance Billing overview) rather than a MiningLedgerEntry.
 
-    Judged on the character's *current* corporation, not where they were at the
-    time. Mining history is not stamped with a corporation, so present
-    membership is the only thing available; someone who leaves the alliance
-    therefore takes their unpaid billing with them, which is the same outcome as
-    leaving without paying.
+    Judged on the corporation's *current* alliance, not where it was when the
+    ore was mined — the same reasoning is_outside_taxable_scope() documents in
+    more detail: history isn't stamped with a corporation's alliance at the
+    time, so present membership is the only thing available.
     """
     scope = _taxable_scope()
     if not scope['active']:
         return False
 
-    character = entry.character
-    corp_id = character.corporation_id
-
     if corp_id in scope['corps']:
         return False
 
-    # The corporation's own record decides, not the copy held on the character.
-    # Both are real EVE alliance IDs, but there is one corporation record per
-    # corporation and one character record per pilot — so the character's copy
-    # is the one that goes stale, and a pilot who changed corp months ago would
-    # keep being billed on the strength of it.
     known_alliances = _corp_alliances()
     if corp_id in known_alliances:
         alliance_id = known_alliances[corp_id]
@@ -498,11 +701,33 @@ def is_outside_taxable_scope(entry):
     # and resent — so an unconfirmable corporation is left alone and logged,
     # rather than taxed on the strength of a guess.
     logger.info(
-        f'Corporation {corp_id} ({entry.character.corporation_name or "unknown"}) '
-        f'is not registered in Alliance Auth, so its alliance cannot be '
-        f'confirmed — left out of billing while a scope is set'
+        f'Corporation {corp_id} ({corp_name or "unknown"}) is not registered '
+        f'in Alliance Auth, so its alliance cannot be confirmed — left out of '
+        f'billing while a scope is set'
     )
     return True
+
+
+def is_outside_taxable_scope(entry):
+    """
+    True when the character who mined this is somewhere the alliance does not
+    tax — a high-sec alt, a trade character, a corp outside the alliance.
+
+    Judged on the character's *current* corporation, not where they were at the
+    time. Mining history is not stamped with a corporation, so present
+    membership is the only thing available; someone who leaves the alliance
+    therefore takes their unpaid billing with them, which is the same outcome as
+    leaving without paying.
+
+    Thin wrapper around is_corp_outside_taxable_scope() — kept as its own
+    function because every existing caller passes a MiningLedgerEntry, and
+    changing all of them to pass a bare corp_id instead would be a much larger,
+    riskier diff for no behavioural difference.
+    """
+    character = entry.character
+    return is_corp_outside_taxable_scope(
+        character.corporation_id, character.corporation_name
+    )
 
 
 def is_tax_exempt(entry):
@@ -531,6 +756,17 @@ def is_tax_exempt(entry):
 
 
 def calculate_entry_tax(entry, corporation=None):
+    # Some callers (the dashboard, the daily-summary widget) only ever price
+    # the requesting user's own entries and never had a reason to look up the
+    # corp object before — but is_excluded_by_moon_rental() and, since this
+    # release, is_before_corp_join_date() both need one. Filled in here rather
+    # than requiring every caller to pass it, so a check added to this
+    # function's exclusion chain doesn't silently miss whichever callers
+    # weren't updated to supply it — which is exactly the gap this fixes for
+    # is_before_corp_join_date() on the dashboard views.
+    if corporation is None:
+        corporation = _get_corp_info(entry.character.corporation_id)
+
     category = get_ore_category(entry.type_id)
 
     # Gas cloud materials (Cytoserocin, Mykoserocin, Fullerite, Tricarboxyl
@@ -546,6 +782,10 @@ def calculate_entry_tax(entry, corporation=None):
         # Scope first: mining outside the alliance's reach is not a question of
         # ore category or exemptions, it simply isn't ours to tax.
         is_outside_taxable_scope(entry)
+        # Same idea, but about WHEN rather than WHERE: ore mined before the
+        # corp's current alliance membership even started isn't the
+        # alliance's to tax either, regardless of who's in scope today.
+        or is_before_corp_join_date(entry, corporation)
         or is_tax_exempt(entry)
         or is_excluded_by_fleet_session(entry, category)
         or is_excluded_by_alliance_moon(entry)
@@ -560,7 +800,7 @@ def calculate_entry_tax(entry, corporation=None):
             'excluded': True,
         }
 
-    tax_rate = get_tax_rate(category)
+    tax_rate = get_tax_rate(category, entry.date)
     tax_amount = entry.total_value * (tax_rate / Decimal('100'))
 
     return {

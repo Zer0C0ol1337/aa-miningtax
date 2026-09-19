@@ -41,13 +41,20 @@ def _record_to_corp_data(record):
             'rate': Decimal(data.get('rate', '0')),
         }
 
-    members = {}
-    for name, data in (record.member_snapshot or {}).items():
-        members[name] = {
-            'mined': Decimal(data.get('mined', '0')),
-            'tax': Decimal(data.get('tax', '0')),
-            'character_id': data.get('character_id'),
+    # Sorted alphabetically (case-insensitively), same as _deserialise_members()
+    # in views.py: a plain dict keeps insertion order, and the invoice table
+    # renders it as-is, so pre-sorting here is what makes the PDF list match
+    # what the Alliance Billing page shows instead of the two disagreeing on
+    # member order.
+    snapshot = record.member_snapshot or {}
+    members = {
+        name: {
+            'mined': Decimal(snapshot[name].get('mined', '0')),
+            'tax': Decimal(snapshot[name].get('tax', '0')),
+            'character_id': snapshot[name].get('character_id'),
         }
+        for name in sorted(snapshot, key=str.lower)
+    }
 
     return {
         'corp_name': record.corporation.corporation_name,

@@ -6,6 +6,7 @@ from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+from django.utils.translation import gettext as _
 
 # EVE-Online-inspirierte Farben
 COLOR_DARK      = colors.HexColor('#1a1a2e')
@@ -108,13 +109,13 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     )
 
     # ── Header ────────────────────────────────────────────────────────────────
-    story.append(Paragraph(f"IGC Alliance — Mining Tax Invoice", style_title))
+    story.append(Paragraph(_("IGC Alliance — Mining Tax Invoice"), style_title))
     story.append(Spacer(1, 2*mm))
     story.append(Paragraph(f"{corp_name}  |  {month:02d}/{year}", style_subtitle))
     story.append(HRFlowable(width='100%', thickness=2, color=COLOR_HIGHLIGHT, spaceAfter=6))
 
-    # ── Zusammenfassung ───────────────────────────────────────────────────────
-    story.append(Paragraph("Zusammenfassung", style_section))
+    # ── Summary ───────────────────────────────────────────────────────────────
+    story.append(Paragraph(_("Summary"), style_section))
 
     rental_total = Decimal('0')
     if moon_rentals:
@@ -125,13 +126,13 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     total_due = corp_data['total_tax'] + rental_total
 
     summary_data = [
-        ['Posten', 'Betrag'],
-        ['Gesamt abgebaut (Wert)', _format_isk(corp_data['total_mined'])],
-        ['Mining Tax gesamt', _format_isk(corp_data['total_tax'])],
+        [_("Item"), _("Amount")],
+        [_("Total mined (value)"), _format_isk(corp_data['total_mined'])],
+        [_("Total mining tax"), _format_isk(corp_data['total_tax'])],
     ]
     if rental_total > 0:
-        summary_data.append(['Moon Rental gesamt', _format_isk(rental_total)])
-    summary_data.append(['GESAMT FÄLLIG', _format_isk(total_due)])
+        summary_data.append([_("Total moon rental"), _format_isk(rental_total)])
+    summary_data.append([_("TOTAL DUE"), _format_isk(total_due)])
 
     # 100/70 statt 110/60: die Schlusszeile setzt den Betrag in 12pt, wo eine
     # Milliardensumme die alten 60 mm gesprengt hat.
@@ -156,10 +157,10 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     story.append(summary_table)
     story.append(Spacer(1, 4*mm))
 
-    # ── Steuer nach Kategorie ─────────────────────────────────────────────────
-    story.append(Paragraph("Mining Tax nach Erz-Kategorie", style_section))
+    # ── Tax by ore category ───────────────────────────────────────────────────
+    story.append(Paragraph(_("Mining Tax by Ore Category"), style_section))
 
-    cat_data = [['Kategorie', 'Steuersatz', 'Abgebaut (ISK)', 'Steuer (ISK)']]
+    cat_data = [[_("Category"), _("Tax Rate"), _("Mined (ISK)"), _("Tax (ISK)")]]
     for cat, data in sorted(corp_data['categories'].items()):
         cat_data.append([
             Paragraph(cat, style_cell),
@@ -194,11 +195,16 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     story.append(cat_table)
     story.append(Spacer(1, 4*mm))
 
-    # ── Mitglieder ────────────────────────────────────────────────────────────
-    story.append(Paragraph("Aufschlüsselung nach Mitglied", style_section))
+    # ── Member breakdown ──────────────────────────────────────────────────────
+    story.append(Paragraph(_("Breakdown by Member"), style_section))
 
-    member_data = [['Spieler', 'Abgebaut (ISK)', 'Steuer (ISK)']]
-    for name, data in sorted(corp_data['members'].items(), key=lambda x: x[1]['tax'], reverse=True):
+    member_data = [[_("Player"), _("Mined (ISK)"), _("Tax (ISK)")]]
+    # Alphabetical (case-insensitive), same order the Alliance Billing page and
+    # pdf_views._record_to_corp_data() already use — previously sorted by tax
+    # descending here only, which meant the PDF and the page it came from could
+    # list members in two different orders.
+    for name in sorted(corp_data['members'], key=str.lower):
+        data = corp_data['members'][name]
         member_data.append([
             Paragraph(name, style_cell),
             _format_isk(data['mined']),
@@ -233,9 +239,9 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     # ── Moon Rentals ──────────────────────────────────────────────────────────
     if moon_rentals and rental_total > 0:
         story.append(Spacer(1, 4*mm))
-        story.append(Paragraph("Moon Rentals", style_section))
+        story.append(Paragraph(_("Moon Rentals"), style_section))
 
-        rental_data = [['Mond', 'Struktur', 'Monatliche Gebühr']]
+        rental_data = [[_("Moon"), _("Structure"), _("Monthly Fee")]]
         for r in moon_rentals:
             if r.active:
                 rental_data.append([
@@ -265,7 +271,7 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     story.append(HRFlowable(width='100%', thickness=1, color=COLOR_MUTED))
     story.append(Spacer(1, 2*mm))
     story.append(Paragraph(
-        f"Generiert von IGC Alliance Mining Tax System  |  {month:02d}/{year}",
+        _("Generated by IGC Alliance Mining Tax System") + f"  |  {month:02d}/{year}",
         ParagraphStyle('Footer', fontSize=8, textColor=COLOR_MUTED, alignment=TA_CENTER)
     ))
 

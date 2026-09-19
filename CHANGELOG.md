@@ -1,6 +1,23 @@
 # Changelog
 
 
+## [0.10.14] - 2026-09-19
+
+### Added
+- **Tax rates are no longer retroactive.** Changing a category's rate in Settings or the admin used to overwrite `TaxRate.tax_rate` outright, so a rate raised mid-month was silently applied to every day already mined that month the next time it was recalculated. A new `TaxRateHistory` table (migration `0022`) records each change with the date it takes effect; `get_tax_rate()` now looks up whichever rate was in force on the ledger entry's own date rather than today's rate. A brand-new category (one that never had a rate before) is backdated to the start of the current month instead, since everything mined in it so far ran on the Default rate by accident rather than by a rate anyone chose. Existing rates are seeded into the history as having applied since 2020-01-01, so nothing already mined changes tax under this release
+- **Payment code reveal timing is a Settings-page value.** The day of the month, the hour (UTC), and the hint text shown before the code appears were previously hardcoded — every change meant a release. All three now live in `PaymentCodeSettings` (migration `0023`), editable from a new card at the top of the Tax Rates tab. The hint text supports `{reveal_day}`/`{reveal_time}` placeholders that substitute safely — an unrecognised placeholder (a typo, or one left over from an older version of the text) is left visible rather than crashing the page
+- **"Rebuild Snapshot" now covers the taxable-scope and zero-classification fixes too**, alongside what it already handled since 0.10.12 — needed because closed months don't pick up logic changes on their own.
+- **Mining before a corporation's alliance join date is excluded from tax.** Reads `/corporations/{id}/alliancehistory/` (public, no token) to find when the corp joined its current alliance, and zero-rates anything mined before that date — the alliance has no more claim on ore mined before the corp was a member than it does on ore mined by a corp that was never a member at all. Cached for a day, since a join date changes only on an actual alliance switch. An unconfirmable join date (ESI unreachable, no history) defaults to taxing rather than exempting, the same reasoning already used for corporations that can't be confirmed to be in scope
+
+### Changed
+- **Alliance Billing no longer lists corporations outside the taxable scope, or corporations owing nothing.** A corp that has left the alliance used to remain on the page at 0 ISK tax — correct, but noise: an officer scanning for who owes what had to skip past every departed corp to find the ones that matter. Both cases are dropped from the page entirely now, judged on current membership the same way billing itself already is; a corp that left takes its unpaid billing with it, which is the same outcome as leaving without paying
+- **Member lists are sorted alphabetically (case-insensitive) everywhere** — the Alliance Billing page, PDF invoices, and the ZIP export. Previously insertion order on the page and tax-descending in the PDF, which meant the two could show members in different orders for the same corp
+- **PDF invoices are in English.** Every visible string was hardcoded German; all of it now goes through `gettext()` with English source text, so it renders correctly regardless of the page it's downloaded from and is ready for a `.po` translation later without further code changes
+
+### Fixed
+- **The Alliance Billing page never showed member names, despite `AllianceBillingRecord.member_snapshot` holding correct data.** `alliance_overview()` set `'members': {}` unconditionally rather than reading the snapshot — the PDF export had its own, correct conversion since 0.10.12 and was never affected, which is why the two disagreed. Added the missing `_deserialise_members()` and wired it in
+- **`calculate_entry_tax()` silently skipped the join-date check (and the existing moon-rental check) for the dashboard and daily-summary views**, which call it without a `corporation` argument. It now looks the corporation up itself when none is passed, so every caller gets the same exclusions rather than only the ones that happened to supply the parameter
+
 ## [0.10.13] - 2026-09.01
 
 ### Fixed

@@ -253,9 +253,9 @@ def rebuild_billing_snapshot_task(year, month, requested_by=None):
     Backs the "Rebuild Snapshot" button on the Alliance Billing page. Needed
     for any month other than the current one: the daily sync only ever
     recalculates today's month, so a closed month whose snapshot predates a
-    schema or logic change (e.g. member_snapshot being added in 0.10.10) has
-    no other way to pick that up short of the next time that same month
-    number rolls around a year later.
+    schema or logic change (e.g. member_snapshot being added) has no other
+    way to pick that up short of the next time that same month number rolls
+    around a year later.
 
     Deletes and recreates rather than updating in place, mirroring what an
     officer running the equivalent shell command by hand would have done —

@@ -1,7 +1,7 @@
 from django import forms
 from .models import (
     TaxRate, MoonRental, AllianceMoon, TreasuryConfig, SovFilterConfig,
-    JaniceConfig, TaxExemption, TaxableScope,
+    JaniceConfig, TaxExemption, TaxableScope, PaymentCodeSettings,
 )
 from allianceauth.eveonline.models import EveCharacter
 from allianceauth.eveonline.models import EveCorporationInfo
@@ -165,6 +165,47 @@ class JaniceConfigForm(forms.ModelForm):
                 'autocomplete': 'off',
             }),
         }
+
+
+# Controls when a corp's payment reference code becomes visible for the
+# previous month's billing, and what text explains the wait beforehand. Was
+# previously a hardcoded day/hour and a fixed English sentence in the code —
+# every change meant a release. This makes it a Settings-page value instead.
+class PaymentCodeSettingsForm(forms.ModelForm):
+    class Meta:
+        model = PaymentCodeSettings
+        fields = ['reveal_day', 'reveal_hour_utc', 'hint_text']
+        widgets = {
+            'reveal_day': forms.NumberInput(attrs={
+                'class': 'form-control', 'min': '1', 'max': '28',
+            }),
+            'reveal_hour_utc': forms.NumberInput(attrs={
+                'class': 'form-control', 'min': '0', 'max': '23',
+            }),
+            'hint_text': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 2,
+            }),
+        }
+
+    def clean_reveal_day(self):
+        day = self.cleaned_data['reveal_day']
+        # Capped at 28 rather than 31: a value that only exists in some months
+        # (e.g. 30 or 31) would silently never reveal the code in February,
+        # April, June, etc. — a bug that would only surface every few months
+        # and be confusing to track down. Restricting the input avoids it
+        # existing at all rather than documenting it as a gotcha.
+        if not (1 <= day <= 28):
+            raise forms.ValidationError(
+                'Must be between 1 and 28, so it falls within every month '
+                'including February.'
+            )
+        return day
+
+    def clean_reveal_hour_utc(self):
+        hour = self.cleaned_data['reveal_hour_utc']
+        if not (0 <= hour <= 23):
+            raise forms.ValidationError('Must be between 0 and 23.')
+        return hour
 
 
 # Exempts a single character or a whole corporation from mining tax.

@@ -278,23 +278,27 @@ def _deserialise_members(member_snapshot):
     None (no snapshot yet, or JSON explicitly null) becomes an empty dict, same
     as the previous "always empty" behaviour — a corp with no snapshot simply
     shows no member rows rather than raising.
+
+    Sorted alphabetically by name (case-insensitively, so "von Neumann" and
+    "Neumann" land near each other rather than being split by case): a plain
+    dict keeps insertion order in Python and Django's {% for %} iterates it
+    as-is, so building it pre-sorted here is what makes the list appear
+    alphabetical on the page without the template itself needing to sort.
     """
     if not member_snapshot:
         return {}
     return {
         name: {
-            'mined': Decimal(data.get('mined', '0')),
-            'tax': Decimal(data.get('tax', '0')),
-            'character_id': data.get('character_id'),
+            'mined': Decimal(member_snapshot[name].get('mined', '0')),
+            'tax': Decimal(member_snapshot[name].get('tax', '0')),
+            'character_id': member_snapshot[name].get('character_id'),
         }
-        for name, data in member_snapshot.items()
+        for name in sorted(member_snapshot, key=str.lower)
     }
 
 
 @check_access(has_officer_access)
 def alliance_overview(request):
-    from . import __version__
-
     today = date.today()
     year = int(request.GET.get('year', today.year))
     month = int(request.GET.get('month', today.month))
@@ -322,24 +326,44 @@ def alliance_overview(request):
     totals_mined = Decimal('0')
     totals_tax = Decimal('0')
 
+    from .billing import is_corp_outside_taxable_scope
+
     for record in billing_records:
         corp_id = record.corporation.corporation_id
+        corp_name = record.corporation.corporation_name
+
+        # Corps that have left the alliance (or were never in scope) are left
+        # off the overview entirely, not merely zero-rated: they are judged on
+        # CURRENT membership, same rule billing itself already uses, so a corp
+        # that left keeps whatever billing already happened but stops
+        # appearing here, rather than sitting on the page with what would now
+        # be a stale or misleading figure.
+        if is_corp_outside_taxable_scope(corp_id, corp_name):
+            continue
+
         rental_fee = rental_totals.get(corp_id, Decimal('0'))
+        total_due = record.total_due
+
+        # A corp with nothing due this month — no tax, no rental — adds noise
+        # rather than information: an officer scanning the page for who owes
+        # what has to skip past every zero row to find the ones that matter.
+        # Checked on total_due specifically, not on mined value alone, so a
+        # corp that mined plenty but owes nothing (fully exempt, say) is
+        # dropped for the same reason a corp that mined nothing is.
+        if total_due <= 0:
+            continue
 
         corps_with_status[corp_id] = {
-            'corp_name': record.corporation.corporation_name,
+            'corp_name': corp_name,
             'total_mined': record.total_mined_value,
             'total_tax': record.mining_tax_amount,
-            # Read from the daily snapshot rather than recalculated live — the
-            # whole point of reading AllianceBillingRecord here is to avoid a
-            # live pass over every ledger entry on every page view.
             'members': _deserialise_members(record.member_snapshot),
             'categories': record.category_snapshot or {},
             'paid': record.paid,
             'paid_at': record.paid_at,
             'auto_verified': record.auto_verified,
             'moon_rental_total': rental_fee,
-            'total_due': record.total_due,
+            'total_due': total_due,
         }
 
         if not record.paid:
@@ -353,6 +377,15 @@ def alliance_overview(request):
             try:
                 corp_obj = EveCorporationInfo.objects.get(corporation_id=corp_id)
             except EveCorporationInfo.DoesNotExist:
+                continue
+
+            if is_corp_outside_taxable_scope(corp_id, corp_obj.corporation_name):
+                continue
+
+            # Same zero-due rule as above: a rental-only corp still owes its
+            # rental fee, so this branch is unaffected unless the fee itself
+            # is zero, which would be a MoonRental configured at 0 ISK.
+            if rental_fee <= 0:
                 continue
 
             corps_with_status[corp_id] = {
@@ -384,13 +417,22 @@ def alliance_overview(request):
 
     from .payments import payment_code_for
     from datetime import datetime, timezone
+    from .models import PaymentCodeSettings
 
-    # Payment code reveals after EVE downtime on the 2nd of each month
-    # EVE downtime is at 11:00 UTC
+    # When the payment code for a month becomes visible, and what to say
+    # before that, both come from PaymentCodeSettings rather than being
+    # hardcoded — a Settings-page value an officer can change at any time
+    # (day of the following month, hour in UTC, and the hint text itself)
+    # without needing a new release for something that used to require one.
+    payment_cfg = PaymentCodeSettings.get_solo()
     next_year, next_month = _next_month(year, month)
-    reveal_datetime = datetime(next_year, next_month, 2, 11, 0, 0, tzinfo=timezone.utc)
+    reveal_datetime = datetime(
+        next_year, next_month, payment_cfg.reveal_day,
+        payment_cfg.reveal_hour_utc, 0, 0, tzinfo=timezone.utc,
+    )
     now_utc = datetime.now(timezone.utc)
     code_revealed = now_utc >= reveal_datetime
+    payment_hint = payment_cfg.rendered_hint()
 
     for cid, cdata in corps_with_status.items():
         cdata['payment_code'] = payment_code_for(cid, month, year) if code_revealed else None
@@ -408,7 +450,7 @@ def alliance_overview(request):
         'next_month': next_month,
         'restricted_to_corp': restricted_to_corp,
         'is_full_officer': has_full_officer_access(request.user),
-        'app_version': __version__,
+        'payment_hint': payment_hint,
     }
     return render(request, 'miningtax/alliance_overview.html', context)
 
@@ -536,8 +578,6 @@ def rebuild_billing_snapshot(request):
 
 @check_access(has_full_officer_access)
 def settings_view(request):
-    from . import __version__
-
     _STANDARD_CATEGORIES = {
         'Default': 10.00,
         'Mercoxit': 10.00,
@@ -562,6 +602,10 @@ def settings_view(request):
     treasury_configs = TreasuryConfig.objects.select_related('corporation').all()
     sov_filter_configs = SovFilterConfig.objects.select_related('corporation').all()
     janice_config = JaniceConfig.get_solo()
+
+    from .models import PaymentCodeSettings
+    from .forms import PaymentCodeSettingsForm
+    payment_code_config = PaymentCodeSettings.get_solo()
 
     from allianceauth.eveonline.models import EveAllianceInfo
     alliance_ids = _own_alliance_ids(request.user)
@@ -745,20 +789,47 @@ def settings_view(request):
         'sov_filter_form': SovFilterConfigForm(alliance_ids=alliance_ids),
         'janice_config': janice_config,
         'janice_form': JaniceConfigForm(instance=janice_config),
-        'app_version': __version__,
+        'payment_code_config': payment_code_config,
+        'payment_code_form': PaymentCodeSettingsForm(instance=payment_code_config),
     }
     return render(request, 'miningtax/settings.html', context)
 
 
 @check_access(has_full_officer_access)
 def settings_save_taxrate(request, pk):
+    """
+    Changes a category's rate. Goes through billing.set_tax_rate() rather than
+    form.save(), so the change is recorded in TaxRateHistory with today's date
+    as when it takes effect — form.save() would only have overwritten
+    TaxRate.tax_rate, which get_tax_rate() no longer consults for anything
+    already mined: without the history entry, ore from earlier in the month
+    would silently be re-taxed at the new rate the next time this month's
+    billing is recalculated (a "Rebuild Snapshot" click, the nightly sync).
+    """
     tax_rate = get_object_or_404(TaxRate, pk=pk)
     if request.method == 'POST':
         form = TaxRateForm(request.POST, instance=tax_rate, prefix=f'tax_{pk}')
         if form.is_valid():
-            form.save()
-            logger.info(f'{request.user.username}: tax rate {tax_rate.ore_category} → {form.instance.tax_rate}%')
-            messages.success(request, f'✅ Tax rate for {tax_rate.ore_category} saved.')
+            from .billing import set_tax_rate
+            new_value = form.cleaned_data['tax_rate']
+            new_description = form.cleaned_data['description']
+
+            set_tax_rate(tax_rate.ore_category, new_value)
+            # description carries no tax meaning and isn't part of the
+            # history — updated directly, same as before.
+            tax_rate.description = new_description
+            tax_rate.save(update_fields=['description'])
+
+            logger.info(
+                f'{request.user.username}: tax rate {tax_rate.ore_category} → '
+                f'{new_value}% effective today (previous rate stays in force for '
+                f'everything mined before today)'
+            )
+            messages.success(
+                request,
+                f'✅ {tax_rate.ore_category} set to {new_value}% — takes effect '
+                f'today, ore already mined this month keeps its previous rate.'
+            )
         else:
             logger.warning(f'{request.user.username}: TaxRate form invalid: {form.errors}')
             messages.error(request, f'❌ Error saving: {form.errors}')
@@ -958,6 +1029,32 @@ def settings_save_janice(request):
             messages.success(request, '✅ Janice configuration saved.')
         else:
             logger.warning(f'{request.user.username}: JaniceConfig form invalid: {form.errors}')
+            messages.error(request, f'❌ Error: {form.errors}')
+    return redirect('miningtax:settings')
+
+
+@check_access(has_full_officer_access)
+def settings_save_payment_code(request):
+    """
+    Saves when the payment reference code reveals and what the hint text
+    before that says. Was previously a hardcoded day/hour and fixed sentence
+    — a Settings-page value now, so changing either doesn't need a release.
+    """
+    if request.method == 'POST':
+        from .models import PaymentCodeSettings
+        from .forms import PaymentCodeSettingsForm
+
+        config = PaymentCodeSettings.get_solo()
+        form = PaymentCodeSettingsForm(request.POST, instance=config)
+        if form.is_valid():
+            form.save()
+            logger.info(
+                f'{request.user.username}: payment code settings saved '
+                f'(reveal day {form.instance.reveal_day}, {form.instance.reveal_hour_utc:02d}:00 UTC)'
+            )
+            messages.success(request, '✅ Payment code settings saved.')
+        else:
+            logger.warning(f'{request.user.username}: PaymentCodeSettings form invalid: {form.errors}')
             messages.error(request, f'❌ Error: {form.errors}')
     return redirect('miningtax:settings')
 
@@ -1306,6 +1403,13 @@ def settings_add_taxrate(request):
     Creates a rate for a category that has none yet. Without this the only way
     to give a new category its own rate was the Django admin, which rather
     defeats a settings page.
+
+    Unlike settings_save_taxrate (a rate CHANGE, effective from today only), a
+    brand-new category had no rate at all before this — everything mined in it
+    so far ran on the Default rate by default, not by choice. Backdating the
+    history entry to the first of the current month means the whole month gets
+    correctly re-taxed under the intended rate the next time it's recalculated,
+    rather than only the remainder of the month from today onward.
     """
     if request.method != 'POST':
         return redirect('miningtax:settings')
@@ -1328,15 +1432,27 @@ def settings_add_taxrate(request):
         messages.error(request, '❌ Tax rate must be between 0 and 100.')
         return redirect('miningtax:settings')
 
-    obj, created = TaxRate.objects.get_or_create(
-        ore_category=category,
-        defaults={'tax_rate': rate_value, 'description': description},
-    )
-    if created:
-        logger.info(f'{request.user.username}: tax rate for "{category}" created at {rate_value}%')
-        messages.success(request, f'✅ Rate for {category} created at {rate_value}%.')
-    else:
+    if TaxRate.objects.filter(ore_category=category).exists():
         messages.warning(request, f'⚠️ {category} already has a rate.')
+        return redirect('miningtax:settings')
+
+    from .billing import set_tax_rate
+    from datetime import date
+
+    month_start = date.today().replace(day=1)
+    set_tax_rate(category, rate_value, effective_from=month_start)
+
+    TaxRate.objects.filter(ore_category=category).update(description=description)
+
+    logger.info(
+        f'{request.user.username}: tax rate for "{category}" created at '
+        f'{rate_value}%, backdated to {month_start} (start of this month)'
+    )
+    messages.success(
+        request,
+        f'✅ Rate for {category} created at {rate_value}%, applied retroactively '
+        f'from {month_start:%d.%m.%Y}.'
+    )
     return redirect('miningtax:settings')
 
 
