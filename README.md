@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.14**
+**Version 0.10.15**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -348,9 +348,15 @@ Each corp's payment reference code stays hidden on the Alliance Billing page unt
 
 ---
 
-## Corporation Join Date
+## Join Date Exclusions
 
-Mining from before a corporation joined its current alliance is excluded from tax, the same way mining outside the taxable scope is. Reads the corporation's public `/alliancehistory/` from ESI (no token required) to find when it joined; anything mined before that date is zero-rated regardless of category, exemptions, or anything else. Cached for a day, since a join date only changes on an actual alliance switch — an officer changing this by, say, disbanding and rejoining under a new corp would see the new date reflected within a day, or immediately after a Rebuild Snapshot if the affected month is recalculated. If ESI can't be reached or the corp has no alliance history, mining is taxed as normal rather than silently exempted — the same fail-safe direction used for a corporation that can't be confirmed to be in scope at all.
+Two independent join-date checks, both zero-rating mining that predates a membership the ledger has no way of knowing wasn't there yet — a `MiningLedgerEntry` only ever records the character's corporation as it is *today*, never as it was on the day the ore was pulled.
+
+**Corporation → alliance.** Mining from before a corporation joined its current alliance. Reads the corporation's public `/alliancehistory/` from ESI (no token required).
+
+**Character → corporation.** Mining from before an individual character joined their current corporation — the case an established alliance corp taking on a new member runs into: without this, the new member's entire history from wherever they mined before joining gets swept into the new corp's bill the moment they show up in it. Reads the character's public `/corporationhistory/` from ESI.
+
+Both are cached for a day, since a join date only changes on an actual corp or alliance switch — a change would be reflected within a day, or immediately after a Rebuild Snapshot if the affected month is recalculated. If ESI can't be reached or no history exists, mining is taxed as normal rather than silently exempted either way — the same fail-safe direction used for a corporation that can't be confirmed to be in scope at all.
 
 ---
 

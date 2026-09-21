@@ -1,6 +1,15 @@
 # Changelog
 
 
+## [0.10.15] - 2026-09-19
+
+### Added
+- **Mining is also excluded before the CHARACTER's own join date into their current corporation**, alongside the corp-to-alliance check added in 0.10.14 — a distinct question, and both now apply independently. A character's mining ledger has no record of which corp they were in at the time of each entry, only their current one, so a pilot who recently joined an established alliance corp had their entire pre-join history (mined while somewhere else, possibly outside the alliance entirely) swept into their new corp's bill the moment they joined. Reads the character's public `/corporationhistory/` from ESI (no token needed) to find when they joined their current corp, and zero-rates anything mined before that date. Cached per character for a day — this endpoint carries its own ESI rate limit (300/minute per IP) rather than the usual generous ceiling, worth caching around rather than querying fresh per entry
+
+### Fixed
+- **The ESI client had no `Character` tag loaded**, so both this release's character-history lookup and any future use of the Character API would have failed with `AttributeError: Tag 'Character' not found` — the client only loads tags explicitly listed in `_get_esi_client()`, and `Character` had never been needed before. Added to the list alongside the existing eight
+- **Both new ESI calls (0.10.14's corp-to-alliance check and this release's character-to-corp check) used the wrong casing: `AllianceHistory`/`CorporationHistory` instead of ESI's actual `Alliancehistory`/`Corporationhistory`.** CCP's own operation IDs keep "history" lowercase even in an otherwise PascalCase name — confirmed against the official API Explorer and cross-checked with an independent third-party Swagger client showing the same casing. Verified against a live django-esi client (`esi.client.Corporation.GetCorporationsCorporationIdAlliancehistory` and `esi.client.Character.GetCharactersCharacterIdCorporationhistory` both resolve correctly) rather than left as a guess
+
 ## [0.10.14] - 2026-09-19
 
 ### Added

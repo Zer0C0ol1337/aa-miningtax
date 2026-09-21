@@ -565,7 +565,7 @@ def get_corp_join_date(corporation_id):
     esi = _get_esi_client()
 
     def _fetch(force=False):
-        return esi.client.Corporation.GetCorporationsCorporationIdAllianceHistory(
+        return esi.client.Corporation.GetCorporationsCorporationIdAlliancehistory(
             corporation_id=corporation_id
         ).results(force_refresh=force)
 
@@ -627,6 +627,110 @@ def is_before_corp_join_date(entry, corporation):
     if not corporation:
         return False
     join_date = get_corp_join_date(corporation.corporation_id)
+    if join_date is None:
+        return False
+    return entry.date < join_date
+
+
+CHARACTER_JOIN_DATE_CACHE_TTL = 60 * 60 * 24
+
+
+def get_character_join_date(character):
+    """
+    The date this character joined its CURRENT corporation, or None if that
+    can't be determined.
+
+    A different question from get_corp_join_date(): a corp can have been in
+    the alliance for years while THIS character only joined the corp last
+    week — their mining ledger has no record of which corp they were in when
+    each entry was mined, only their corp today, so history from before they
+    personally joined would otherwise be swept into the new corp's bill the
+    moment they show up in it.
+
+    Reads /characters/{id}/corporationhistory/ — public, no token needed, same
+    flat {corporation_id, record_id, start_date, is_deleted} shape as the corp
+    endpoint's v2 (no nested sub-object to handle here). This endpoint carries
+    its own ESI rate limit (300/minute per IP, documented separately from the
+    usual error-limit system) rather than the usual generous ceiling, which is
+    the specific reason this result is cached per character for a day instead
+    of being looked up fresh: an alliance with many active pilots would burn
+    through that limit quickly if every billing recalculation re-fetched it
+    for every character in every entry.
+    """
+    cache_key = f'miningtax:char_join_date:{character.character_id}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return None if cached == 'none' else cached
+
+    from .services import _get_esi_client
+    from esi.exceptions import HTTPNotModified
+
+    esi = _get_esi_client()
+
+    def _fetch(force=False):
+        return esi.client.Character.GetCharactersCharacterIdCorporationhistory(
+            character_id=character.character_id
+        ).results(force_refresh=force)
+
+    try:
+        try:
+            history = _fetch()
+        except HTTPNotModified:
+            history = _fetch(force=True)
+    except Exception as e:
+        logger.warning(
+            f'Could not fetch corporation history for character '
+            f'{character.character_id}: {e}'
+        )
+        return None
+
+    if not history:
+        cache.set(cache_key, 'none', CHARACTER_JOIN_DATE_CACHE_TTL)
+        return None
+
+    # The row for the character's CURRENT corp is the one with the highest
+    # record_id, same selection rule as get_corp_join_date() — matched against
+    # the character's own corporation_id rather than assumed to be the last
+    # entry, since a stale character record could in principle disagree with
+    # what ESI's history considers current.
+    current_corp_id = character.corporation_id
+    matching = [
+        row for row in history
+        if getattr(row, 'corporation_id', None) == current_corp_id
+    ]
+    current = max(matching, key=lambda row: getattr(row, 'record_id', 0), default=None)
+
+    if current is None:
+        # History exists but none of it matches the character's current corp —
+        # can happen right after a corp move, before ESI's own history catches
+        # up. Treated as unknown rather than guessed at.
+        cache.set(cache_key, 'none', CHARACTER_JOIN_DATE_CACHE_TTL)
+        return None
+
+    start_date = getattr(current, 'start_date', None)
+    if start_date is None:
+        cache.set(cache_key, 'none', CHARACTER_JOIN_DATE_CACHE_TTL)
+        return None
+
+    join_date = start_date.date() if hasattr(start_date, 'date') else start_date
+    cache.set(cache_key, join_date, CHARACTER_JOIN_DATE_CACHE_TTL)
+    return join_date
+
+
+def is_before_character_join_date(entry):
+    """
+    True when the entry's date predates this character's own join date into
+    their current corporation — mining they did while still somewhere else,
+    which their current corp (and alliance) has no more claim on than it does
+    on ore mined by a character who was never a member.
+
+    Independent of is_before_corp_join_date(): that one asks when the CORP
+    joined the ALLIANCE, this one asks when the CHARACTER joined the CORP.
+    Both apply — a character can clear this check by having joined their corp
+    long ago, and still be excluded by the other if the corp itself is new to
+    the alliance, or the reverse.
+    """
+    join_date = get_character_join_date(entry.character)
     if join_date is None:
         return False
     return entry.date < join_date
@@ -782,10 +886,13 @@ def calculate_entry_tax(entry, corporation=None):
         # Scope first: mining outside the alliance's reach is not a question of
         # ore category or exemptions, it simply isn't ours to tax.
         is_outside_taxable_scope(entry)
-        # Same idea, but about WHEN rather than WHERE: ore mined before the
-        # corp's current alliance membership even started isn't the
-        # alliance's to tax either, regardless of who's in scope today.
+        # Two separate "not yet ours" questions about WHEN: did the CORP
+        # belong to the alliance yet, and did this CHARACTER belong to the
+        # corp yet. Either being false at the entry's date means the mining
+        # predates any claim on it — a corp new to the alliance and a
+        # character new to an established corp are both covered.
         or is_before_corp_join_date(entry, corporation)
+        or is_before_character_join_date(entry)
         or is_tax_exempt(entry)
         or is_excluded_by_fleet_session(entry, category)
         or is_excluded_by_alliance_moon(entry)
