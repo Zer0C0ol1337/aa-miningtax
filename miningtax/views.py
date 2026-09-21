@@ -325,6 +325,7 @@ def alliance_overview(request):
     corps_with_status = {}
     totals_mined = Decimal('0')
     totals_tax = Decimal('0')
+    totals_rental = Decimal('0')
 
     from .billing import is_corp_outside_taxable_scope
 
@@ -369,6 +370,13 @@ def alliance_overview(request):
         if not record.paid:
             totals_mined += record.total_mined_value
             totals_tax += record.mining_tax_amount
+            # Same "unpaid only" definition as mining/tax above — deliberately,
+            # not an approximation: total_due is a single combined figure per
+            # corp (tax + rental together), so there is no way to know whether
+            # a paid amount covered the rental, the tax, or both. Treating
+            # rental the same as the other two is the only definition the data
+            # can actually support, not merely the simplest one.
+            totals_rental += rental_fee
 
     # Add rental-only corps that don't have mining records
     for corp_id, rental_fee in rental_totals.items():
@@ -400,9 +408,13 @@ def alliance_overview(request):
                 'moon_rental_total': rental_fee,
                 'total_due': rental_fee,
             }
+            # This branch only exists for corps with no mining record, always
+            # unpaid by construction — so its rental always counts toward the
+            # same "unpaid only" total the mining-record branch above uses.
+            totals_rental += rental_fee
 
     restricted_to_corp = None
-    totals = {'mined': totals_mined, 'tax': totals_tax}
+    totals = {'mined': totals_mined, 'tax': totals_tax, 'rental': totals_rental}
 
     if is_corp_scoped(request.user):
         restricted_to_corp = own_corporation_id(request.user)
@@ -413,6 +425,7 @@ def alliance_overview(request):
         totals = {
             'mined': sum((c['total_mined'] for c in corps_with_status.values()), Decimal('0')),
             'tax': sum((c['total_tax'] for c in corps_with_status.values()), Decimal('0')),
+            'rental': sum((c['moon_rental_total'] for c in corps_with_status.values()), Decimal('0')),
         }
 
     from .payments import payment_code_for

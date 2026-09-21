@@ -1,13 +1,13 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.15**
+**Version 0.10.16**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
 ## Features
 
 - **Personal mining dashboard** — this month's ledger entries with calculated tax, plus a daily summary card for yesterday (total value, tax, top 5 ores by value) so a quick check doesn't require scrolling the full table
-- **Alliance-wide billing overview** — all corps, all members (grouped by main character, sorted alphabetically), tax by ore category, moon rental fees, and total due. Reads from a daily-refreshed snapshot rather than recalculating the month live, so the page loads instantly instead of iterating the full ledger on every view. Corporations outside the taxable scope (left the alliance, never in it) and corporations owing nothing this month are left off the list entirely rather than shown at 0 ISK
+- **Alliance-wide billing overview** — all corps, all members (grouped by main character, sorted alphabetically), tax by ore category, moon rental fees, and total due, with alliance-wide totals for mining, tax, and moon rental at the top. Reads from a daily-refreshed snapshot rather than recalculating the month live, so the page loads instantly instead of iterating the full ledger on every view. Corporations outside the taxable scope (left the alliance, never in it) and corporations owing nothing this month are left off the list entirely rather than shown at 0 ISK
 - **Configurable tax rates** per ore category (R4 / R8 / R16 / R32 / R64 / Ice / Ore / Gas / Mercoxit), plus any category you define yourself
 - **Complete ore list, maintained by ESI** — every mineable type is imported and classified by its EVE group, so a newly introduced ore is never taxed at the Default rate unnoticed. The Settings page reports how many mined types still lack a category
 - **Category rules** — assign ore to a category by name, ahead of EVE's own grouping: abyssal ore and Prismaticite sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches. A category can also be locked so the automatic import leaves it alone
@@ -191,7 +191,7 @@ The plugin deliberately makes no assumptions about who deserves which access. Ea
 
 ## Settings UI
 
-Reachable at `/miningtax/settings/` (requires the real `mining_officer` permission or superuser — CEO auto-access does not reach this page). Six tabs:
+Reachable at `/miningtax/settings/` (requires the real `mining_officer` permission or superuser — CEO auto-access does not reach this page). Six tabs, each corporation dropdown a searchable combobox (click, type to filter, pick from the results) rather than a plain scrollable list:
 
 ### Tax Rates
 Also imports the full ore list from ESI on demand, reports how many mined types still have no category, and lets you create a rate for a category that has none — those are billed at the Default rate until you do.
@@ -209,12 +209,12 @@ A corp renting a moon pays a flat monthly fee; mining there becomes tax-free for
 Moons can be marked `Event` (tax-free) or `Public` (normally taxed). Matching is done via a case-insensitive substring check against the ledger's `solar_system_name`. An optional **Structure Name** narrows a tax-free moon to a single structure when several structures share the same solar system.
 
 ### Treasury
-Configure which corporation's wallet is monitored for incoming tax payments, and the keyword that must appear in the wallet journal's reason field (e.g. "Corp Tax"). This keyword is also displayed with a copy button on the alliance overview page so members know what to put in the transfer description. A payment is matched when:
-1. The wallet journal reason contains the configured keyword
-2. The sending corporation matches an open billing record's corporation
+Configure which corporation's wallet is monitored for incoming tax payments, and which wallet division (1–7). Each corp/month gets its own exact payment reference code — `{corp_id}/{month:02d}/{year}` — shown with a copy button on the alliance overview page so members know exactly what to put in the transfer's reason field. A payment is matched when, in the treasury corp's wallet journal:
+1. The reason is an EXACT match for that corp/month's code (not a substring, so one corp's code can't accidentally be contained in another's transfer text)
+2. The sending party's ID matches the corporation on the open billing record (a transfer from an individual character's personal wallet, even one belonging to that corp, is not a match — it must be a corp-wallet transfer)
 3. The amount is at least the invoice's total due
 
-Requires a director/accountant character of the treasury corp with the `esi-wallet.read_corporation_wallets.v1` scope (via Corptools' Corporation Audit, not Character Audit).
+Requires a character of the treasury corp — any character with corp-wallet access, not specifically a director or accountant — to be registered in Alliance Auth with a valid `esi-wallet.read_corporation_wallets.v1` token. This is a plugin-level ESI token via Alliance Auth's own token system, independent of Corptools; Corptools does not need to be installed for payment checking to work.
 
 ### Systems
 Add a reference corporation to keep a live list of the systems it holds sovereignty in, refreshed from ESI's public sovereignty data by the daily sync or the button. That list fills the solar-system dropdowns used when configuring moons — it has **no** effect on taxation. A status card shows how many systems are cached and when they were last refreshed.
@@ -352,11 +352,11 @@ Each corp's payment reference code stays hidden on the Alliance Billing page unt
 
 Two independent join-date checks, both zero-rating mining that predates a membership the ledger has no way of knowing wasn't there yet — a `MiningLedgerEntry` only ever records the character's corporation as it is *today*, never as it was on the day the ore was pulled.
 
-**Corporation → alliance.** Mining from before a corporation joined its current alliance. Reads the corporation's public `/alliancehistory/` from ESI (no token required).
+**Corporation → alliance.** Mining from before a corporation joined its current alliance. Reads the corporation's public `/alliancehistory/` from ESI (no token required) — cached for a day, since a corp's alliance membership changes rarely; a change would be reflected within a day, or immediately after a Rebuild Snapshot if the affected month is recalculated.
 
-**Character → corporation.** Mining from before an individual character joined their current corporation — the case an established alliance corp taking on a new member runs into: without this, the new member's entire history from wherever they mined before joining gets swept into the new corp's bill the moment they show up in it. Reads the character's public `/corporationhistory/` from ESI.
+**Character → corporation.** Mining from before an individual character joined their current corporation — the case an established alliance corp taking on a new member runs into: without this, the new member's entire history from wherever they mined before joining gets swept into the new corp's bill the moment they show up in it. Reads Corptools' own `CorporationHistory` table first, if Corptools is installed and already audits that character — no extra ESI call at all, since Corptools keeps this current on its own schedule regardless of this plugin. Falls back to the character's public `/corporationhistory/` from ESI (cached for a day) only for a character Corptools has no audit record for.
 
-Both are cached for a day, since a join date only changes on an actual corp or alliance switch — a change would be reflected within a day, or immediately after a Rebuild Snapshot if the affected month is recalculated. If ESI can't be reached or no history exists, mining is taxed as normal rather than silently exempted either way — the same fail-safe direction used for a corporation that can't be confirmed to be in scope at all.
+If ESI can't be reached or no history exists (from either source), mining is taxed as normal rather than silently exempted — the same fail-safe direction used for a corporation that can't be confirmed to be in scope at all.
 
 ---
 

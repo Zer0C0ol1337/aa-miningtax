@@ -1360,6 +1360,103 @@ wireAllianceFilter('rental_alliance_filter', 'id_corporation');
 wireAllianceFilter('treasury_alliance_filter', 'id_treasury_corporation');
 wireAllianceFilter('sov_alliance_filter', 'id_sov_corporation');
 
+// Turns a plain corporation <select> into a searchable combobox: type to
+// filter, click or arrow-key to pick. The underlying <select> is kept in the
+// DOM (just visually hidden) rather than replaced, so form submission and
+// wireAllianceFilter/wireCorpFilter above — both of which read and write
+// this <select>'s value and its options' `hidden` attribute — keep working
+// completely unchanged. This function only ever reads the <select>'s current
+// option list and writes its .value; it never touches option.hidden itself,
+// so an alliance filter narrowing the underlying <select> is picked up on
+// the combobox's next open/keystroke rather than fought over.
+function makeSearchableCorpSelect(selectId) {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+
+  // Wrapper takes the select's place in the layout; the select moves inside
+  // it, hidden, so its label/grid column position is unaffected.
+  const wrapper = document.createElement('div');
+  wrapper.className = 'position-relative';
+  select.parentNode.insertBefore(wrapper, select);
+  wrapper.appendChild(select);
+  select.style.display = 'none';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = select.className || 'form-control';
+  input.autocomplete = 'off';
+  input.placeholder = select.options[select.selectedIndex]
+    ? select.options[select.selectedIndex].text
+    : '';
+  wrapper.appendChild(input);
+
+  const menu = document.createElement('div');
+  menu.className = 'list-group position-absolute w-100 shadow-sm';
+  menu.style.zIndex = '1000';
+  menu.style.maxHeight = '260px';
+  menu.style.overflowY = 'auto';
+  menu.style.display = 'none';
+  wrapper.appendChild(menu);
+
+  function visibleOptions() {
+    // Respects whatever wireAllianceFilter has already hidden — a combobox
+    // built on top of a narrowed <select> only offers the narrowed set.
+    return Array.from(select.options).filter(o => o.value && !o.hidden);
+  }
+
+  function renderMenu(filterText) {
+    const needle = filterText.trim().toLowerCase();
+    const matches = visibleOptions().filter(
+      o => !needle || o.text.toLowerCase().includes(needle)
+    );
+
+    menu.innerHTML = '';
+    if (matches.length === 0) {
+      menu.style.display = 'none';
+      return;
+    }
+
+    for (const opt of matches) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'list-group-item list-group-item-action py-1';
+      item.textContent = opt.text;
+      item.addEventListener('mousedown', function(e) {
+        // mousedown (not click) fires before the input's blur, so the
+        // selection registers before the menu closes on blur below.
+        e.preventDefault();
+        select.value = opt.value;
+        select.dispatchEvent(new Event('change'));
+        input.value = opt.text;
+        menu.style.display = 'none';
+      });
+      menu.appendChild(item);
+    }
+    menu.style.display = 'block';
+  }
+
+  input.addEventListener('focus', function() {
+    input.value = '';
+    renderMenu('');
+  });
+  input.addEventListener('input', function() {
+    renderMenu(input.value);
+  });
+  input.addEventListener('blur', function() {
+    // Delayed so a menu-item's mousedown (see above) has already run.
+    setTimeout(function() {
+      menu.style.display = 'none';
+      const current = select.options[select.selectedIndex];
+      input.value = current && current.value ? current.text : '';
+    }, 150);
+  });
+}
+
+makeSearchableCorpSelect('id_corporation');
+makeSearchableCorpSelect('id_treasury_corporation');
+makeSearchableCorpSelect('id_sov_corporation');
+makeSearchableCorpSelect('id_exempt_corporation');
+
 // --- Remember the active settings tab across reloads ---------------------
 // Every settings action (add/delete/save) POSTs and redirects back to this
 // page, which would otherwise always land on the first tab. We remember the

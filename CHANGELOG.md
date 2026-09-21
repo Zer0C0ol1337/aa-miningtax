@@ -1,6 +1,20 @@
 # Changelog
 
 
+## [0.10.16] - 2026-09-21
+
+### Added
+- **Corporation dropdowns in Settings (Treasury, Moon Rentals, Sovereignty Filter, Tax Exemptions) are now searchable.** Clicking one turns it into a type-to-filter combobox instead of scrolling a long list — built with plain JavaScript on top of the existing `<select>` rather than a new library, so form submission and the existing alliance-filter dropdowns work exactly as before; the underlying `<select>` stays in the DOM, just visually replaced by the search box
+
+### Changed
+- **Mining before a character's own join date into their current corporation is now checked against Corptools' locally-synced data first, with ESI only as a fallback.** `get_character_join_date()` reads `corptools.models.interactions.CorporationHistory` — the same table Corptools' own `TimeInCorpFilter`/`CharacterAgeFilter` smart filters already rely on — before ever touching ESI. For any character Corptools already audits (which is normally everyone, since the alliance runs Corptools regardless of this plugin), this join-date check now costs nothing extra: no additional ESI call, no rate limit to worry about, and no daily-cache staleness window either, since Corptools keeps its own copy current on its own schedule. ESI is only queried for a character Corptools has no audit record for
+- **Total Moon Rental added to the Alliance Billing summary row**, alongside Total Mining and Total Mining Tax — the sum of moon rental fees for corporations that still owe this month, using the same "unpaid only" definition the other two totals already use. A corp marked paid (manually or auto-verified) has implicitly confirmed its whole `total_due` — tax and rental together — so its rental drops out of this total the same way its tax already does; there's no way to tell from a single `paid` flag whether a partial payment covered rental specifically, so treating it identically to tax and mining is the only definition the underlying data actually supports
+
+### Fixed
+- **README's Treasury section described the payment-matching mechanism inaccurately.** It said members type a configured *keyword* into the transfer reason, matched as a substring — the actual code has used an exact per-corp/month reference code (`{corp_id}/{month}/{year}`) since Payment Code Timing was introduced. It also credited the wallet token to "Corptools' Corporation Audit"; the plugin uses its own Alliance Auth token lookup independent of Corptools. No code changed, just the documentation catching up to what `payments.py` has actually done for a while
+- **Alliance-to-corp join date lookups (`get_corp_join_date()`) could hammer ESI's alliance-history endpoint hundreds or thousands of times in a single billing recalculation.** A failed ESI call — including the `AttributeError` from the 0.10.14 casing bug, before that was fixed — was never cached, only successful (or successfully-empty) results were. Every ledger entry for the same corp re-attempted, and re-failed, the identical call. Both `get_corp_join_date()` and `get_character_join_date()`'s ESI fallback now cache a failure the same way they cache a genuine "no history" result, so a broken or missing operation is retried once a day per corp/character rather than once per entry
+- **Django's default primary key type for `TaxRateHistory` and `PaymentCodeSettings` (added in 0.10.14) didn't match the project's `DEFAULT_AUTO_FIELD` setting**, which `makemigrations` flagged as an unreflected model change on every run. Migration `0024` aligns both to `BigAutoField` — no data affected, purely a column-type consistency fix
+
 ## [0.10.15] - 2026-09-19
 
 ### Added

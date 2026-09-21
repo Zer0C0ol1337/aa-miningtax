@@ -575,7 +575,14 @@ def get_corp_join_date(corporation_id):
         except HTTPNotModified:
             history = _fetch(force=True)
     except Exception as e:
+        # Cached the same as a genuine "no history" result (not a short retry
+        # window): a broken or missing ESI operation does not fix itself
+        # between one ledger entry and the next, so without this every entry
+        # for the corp re-attempted the same failing call — one alliance with
+        # a few thousand entries in a month turned one bad endpoint into a
+        # few thousand near-identical warnings inside minutes.
         logger.warning(f'Could not fetch alliance history for corp {corporation_id}: {e}')
+        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
         return None
 
     if not history:
@@ -635,6 +642,49 @@ def is_before_corp_join_date(entry, corporation):
 CHARACTER_JOIN_DATE_CACHE_TTL = 60 * 60 * 24
 
 
+def _character_join_date_from_corptools(character):
+    """
+    Reads the character's corp-history from Corptools' own database
+    (corptools.models.interactions.CorporationHistory) instead of ESI.
+
+    Corptools already syncs this on its own schedule for every character it
+    audits — the alliance runs Corptools regardless of this plugin, so the
+    data is normally already sitting locally with no extra ESI cost to us at
+    all, not even the one-call-per-day this function used to make itself.
+
+    Returns the join date, or None if Corptools isn't installed, doesn't have
+    an audit for this character, or its history doesn't (yet) cover the
+    character's current corp — callers fall back to ESI in any of those
+    cases, exactly like _get_corptools_entries() already does for the mining
+    ledger.
+    """
+    try:
+        from corptools.models import CharacterAudit
+        from corptools.models.interactions import CorporationHistory
+    except ImportError:
+        return None
+
+    audit = CharacterAudit.objects.filter(
+        character__character_id=character.character_id
+    ).first()
+    if not audit:
+        return None
+
+    # Same selection rule as the ESI path: the row for the CURRENT corp with
+    # the highest record_id, not just "the last row" or "the row without
+    # is_deleted" — record_id is what ESI itself documents as authoritative
+    # when dates might be ambiguous, and Corptools' table mirrors ESI's shape
+    # exactly (it's populated directly from the same endpoint).
+    current = CorporationHistory.objects.filter(
+        character=audit, corporation_id=character.corporation_id
+    ).order_by('-record_id').first()
+
+    if current is None:
+        return None
+
+    return current.start_date.date()
+
+
 def get_character_join_date(character):
     """
     The date this character joined its CURRENT corporation, or None if that
@@ -647,20 +697,27 @@ def get_character_join_date(character):
     personally joined would otherwise be swept into the new corp's bill the
     moment they show up in it.
 
-    Reads /characters/{id}/corporationhistory/ — public, no token needed, same
-    flat {corporation_id, record_id, start_date, is_deleted} shape as the corp
-    endpoint's v2 (no nested sub-object to handle here). This endpoint carries
-    its own ESI rate limit (300/minute per IP, documented separately from the
-    usual error-limit system) rather than the usual generous ceiling, which is
-    the specific reason this result is cached per character for a day instead
-    of being looked up fresh: an alliance with many active pilots would burn
-    through that limit quickly if every billing recalculation re-fetched it
-    for every character in every entry.
+    Corptools first (see _character_join_date_from_corptools — it already
+    audits this data locally for every character it tracks), then ESI as a
+    fallback for characters Corptools doesn't audit. The ESI path reads
+    /characters/{id}/corporationhistory/ — public, no token needed, same flat
+    {corporation_id, record_id, start_date, is_deleted} shape Corptools itself
+    stores. That endpoint carries its own ESI rate limit (300/minute per IP,
+    documented separately from the usual error-limit system) rather than the
+    usual generous ceiling, which is why this result is cached per character
+    for a day regardless of which source answered — an alliance with many
+    active pilots would burn through that limit quickly if every billing
+    recalculation re-fetched it for every character in every entry.
     """
     cache_key = f'miningtax:char_join_date:{character.character_id}'
     cached = cache.get(cache_key)
     if cached is not None:
         return None if cached == 'none' else cached
+
+    from_corptools = _character_join_date_from_corptools(character)
+    if from_corptools is not None:
+        cache.set(cache_key, from_corptools, CHARACTER_JOIN_DATE_CACHE_TTL)
+        return from_corptools
 
     from .services import _get_esi_client
     from esi.exceptions import HTTPNotModified
@@ -678,10 +735,16 @@ def get_character_join_date(character):
         except HTTPNotModified:
             history = _fetch(force=True)
     except Exception as e:
+        # Same reasoning as the corp-level check: a broken or missing ESI
+        # operation does not fix itself between one ledger entry and the
+        # next, so failing to cache it here meant every entry for this
+        # character re-attempted — and failed at — the same call, turning one
+        # bad endpoint into one warning per entry rather than one per day.
         logger.warning(
             f'Could not fetch corporation history for character '
             f'{character.character_id}: {e}'
         )
+        cache.set(cache_key, 'none', CHARACTER_JOIN_DATE_CACHE_TTL)
         return None
 
     if not history:
