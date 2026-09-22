@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.16**
+**Version 0.10.17**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -215,6 +215,8 @@ Configure which corporation's wallet is monitored for incoming tax payments, and
 3. The amount is at least the invoice's total due
 
 Requires a character of the treasury corp — any character with corp-wallet access, not specifically a director or accountant — to be registered in Alliance Auth with a valid `esi-wallet.read_corporation_wallets.v1` token. This is a plugin-level ESI token via Alliance Auth's own token system, independent of Corptools; Corptools does not need to be installed for payment checking to work.
+
+**If Corptools is installed and already audits the treasury corp's wallet, both the automatic daily check and the manual "Check Payments Now" button read its journal directly — no ESI call at all.** ESI is only used as a fallback, for a corp/division Corptools hasn't audited yet. Since a payment code doesn't reveal until the 2nd of the month, Corptools' own sync schedule is never the limiting factor either way.
 
 ### Systems
 Add a reference corporation to keep a live list of the systems it holds sovereignty in, refreshed from ESI's public sovereignty data by the daily sync or the button. That list fills the solar-system dropdowns used when configuring moons — it has **no** effect on taxation. A status card shows how many systems are cached and when they were last refreshed.

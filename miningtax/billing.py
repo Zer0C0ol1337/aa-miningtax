@@ -1086,7 +1086,27 @@ def _serialise_members(members):
 def save_billing_records_for_month(year, month):
     """
     Saves an AllianceBillingRecord for all corps for a given month.
-    Called daily after the sync to keep billing records up to date.
+
+    Called daily for the CURRENT month only (see daily_mining_sync_task) — a
+    past month is deliberately never swept automatically once it has ended,
+    whether or not its corps have paid yet: a corp's invoice is meant to be a
+    known, stable number the moment the month closes, not something that can
+    silently move underneath a payer because an unrelated rule changed
+    afterward (a tax-rate fix, a join-date correction, anything else). An
+    officer who genuinely needs to correct a past month can still do so
+    explicitly via the "Rebuild Snapshot" button — a deliberate, visible,
+    logged action, not something that happens on its own overnight.
+
+    Includes corps that mined nothing this month but still owe a moon rental:
+    calculate_alliance_billing() only ever discovers a corp through its ledger
+    entries, so a corp with an active MoonRental and zero mining would
+    otherwise never get a record at all — no record for save_billing_record()
+    to skip once paid, and nothing for a PDF/CSV export to find, ever, no
+    matter how many times the export is retried. alliance_overview() already
+    had to special-case this in its own view code; folding it in here means
+    every caller (PDF, CSV, ZIP, this month's daily save, a manual rebuild)
+    gets it for free instead of alliance_overview() being the only one that
+    knew about rental-only corps.
     """
     data = calculate_alliance_billing(year, month)
     saved = 0
@@ -1094,6 +1114,41 @@ def save_billing_records_for_month(year, month):
         record = save_billing_record(corp_id, corp_data, year, month)
         if record:
             saved += 1
+
+    from allianceauth.eveonline.models import EveCorporationInfo
+
+    rental_only_corps = MoonRental.objects.filter(
+        active=True
+    ).exclude(
+        corporation__corporation_id__in=data['corps'].keys()
+    ).values_list('corporation_id', flat=True).distinct()
+
+    for corp_pk in rental_only_corps:
+        try:
+            corp_obj = EveCorporationInfo.objects.get(pk=corp_pk)
+        except EveCorporationInfo.DoesNotExist:
+            continue
+
+        if is_corp_outside_taxable_scope(corp_obj.corporation_id, corp_obj.corporation_name):
+            continue
+
+        rental_total = MoonRental.objects.filter(
+            corporation=corp_obj, active=True
+        ).aggregate(total=Sum('monthly_fee'))['total'] or Decimal('0')
+        if rental_total <= 0:
+            continue
+
+        empty_corp_data = {
+            'corp_name': corp_obj.corporation_name,
+            'total_mined': Decimal('0'),
+            'total_tax': Decimal('0'),
+            'members': {},
+            'categories': {},
+        }
+        record = save_billing_record(corp_obj.corporation_id, empty_corp_data, year, month)
+        if record:
+            saved += 1
+
     return saved
 
 

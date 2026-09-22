@@ -13,6 +13,36 @@
   Callers pass `active` to mark the current page: {% include "…/_nav.html" with active="settings" %}
 {% endcomment %}
 
+{% comment %}
+  Bootstrap's btn-outline-primary/secondary default colors have poor contrast
+  against Alliance Auth's dark theme — text and border blend almost into the
+  background, making buttons like PDF downloads and Reset-to-Unpaid across
+  every page of this plugin nearly unreadable. Fixed here once, in the file
+  every page already includes, rather than copied into each page separately
+  — a copy-paste version of this exact fix already went missing once this
+  session when a template got rebuilt from an older upload.
+
+  Scoped to [data-theme="darkly"] — confirmed via the browser's own DOM
+  inspector against a live page (<html data-theme="darkly">), NOT Bootstrap
+  5.3's native [data-bs-theme="dark"] mechanism as first assumed: Alliance
+  Auth themes via Bootswatch, a different attribute name and value entirely,
+  which is why an earlier version of this fix silently never matched
+  anything. Light mode — which already reads fine — is completely untouched.
+{% endcomment %}
+<style>
+[data-theme="darkly"] .btn-outline-primary,
+[data-theme="darkly"] .btn-outline-secondary {
+    color: #e9ecef;
+    border-color: #adb5bd;
+}
+[data-theme="darkly"] .btn-outline-primary:hover,
+[data-theme="darkly"] .btn-outline-secondary:hover {
+    color: #fff;
+    background-color: #495057;
+    border-color: #adb5bd;
+}
+</style>
+
 <div class="d-flex gap-2 flex-wrap mb-3">
   <a href="{% url 'miningtax:dashboard' %}"
      class="btn btn-sm {% if active == 'dashboard' %}btn-primary{% else %}btn-outline-secondary{% endif %}">

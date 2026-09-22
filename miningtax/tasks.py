@@ -39,6 +39,13 @@ def daily_mining_sync_task():
     sov_systems = sync_sov_systems()
 
     today = date.today()
+    # Deliberately the CURRENT month only. A past month is not recalculated
+    # here even if it still has unpaid corps in it — once a month ends, its
+    # invoice is meant to be a fixed, known number, not something that can
+    # silently shift overnight because an unrelated rule changed afterward.
+    # An officer who needs to correct a past month does so explicitly via the
+    # "Rebuild Snapshot" button, a deliberate and visible action rather than
+    # something the nightly sync decides on its own.
     billing_saved = save_billing_records_for_month(today.year, today.month)
     payments_matched = check_corp_payments(today.year, today.month)
 
@@ -115,6 +122,11 @@ def manual_sync_task(user_id):
 def check_payments_task(year, month, requested_by=None):
     from .payments import check_corp_payments
 
+    # Corptools-first here too, same as the automatic daily check — the
+    # payment code doesn't reveal until the 2nd of the month anyway, so
+    # Corptools' own sync lag behind ESI is never actually the bottleneck;
+    # there's no scenario where this button needs fresher data than
+    # Corptools already has.
     matched = check_corp_payments(year, month)
 
     logger.info(

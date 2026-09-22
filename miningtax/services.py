@@ -15,7 +15,17 @@ STRUCTURE_ID_THRESHOLD = 100_000_000
 def _get_corptools_entries(character):
     """
     Reads mining ledger entries from the Corptools DB for this character.
-    Returns None if Corptools is not installed (→ ESI fallback).
+
+    Returns None whenever ESI should be tried instead — not just when
+    Corptools is missing entirely, but also when Corptools IS installed and
+    simply hasn't audited this particular character yet. Returning [] for
+    that second case used to look like "Corptools has data, and it's empty",
+    which sync_character_mining() (correctly) never falls back from — so a
+    character with a real ESI mining token, but no CharacterAudit yet, was
+    silently skipped forever, with nothing synced and no error to notice.
+    "Corptools doesn't know this character" and "Corptools confirms they
+    mined nothing" are different facts; only the second one should mean
+    "don't bother asking ESI".
     """
     try:
         from corptools.models import CharacterMiningLedger, CharacterAudit
@@ -25,7 +35,7 @@ def _get_corptools_entries(character):
         ).first()
 
         if not audit:
-            return []
+            return None
 
         entries = CharacterMiningLedger.objects.filter(
             character=audit
@@ -339,19 +349,38 @@ def sync_all_corp_observers():
 # ─── SYNC ALL CHARACTERS ──────────────────────────────────────────────────────
 
 def sync_all_characters():
-    """Syncs all characters from Corptools DB or the ESI token table."""
+    """
+    Syncs all characters known either through Corptools' audits or through an
+    ESI mining token.
+
+    The union of both, not "Corptools' list if installed, else the ESI list"
+    — a character can hold a valid ESI mining token before Corptools has ever
+    audited them (a new alt, or Corptools simply hasn't run for them yet).
+    With only the Corptools list, such a character was invisible to this
+    function entirely: never attempted, so sync_character_mining()'s own
+    None-vs-[] fallback (see _get_corptools_entries) never even got a chance
+    to run for them.
+    """
     from allianceauth.eveonline.models import EveCharacter
+
+    character_ids = set()
 
     try:
         from corptools.models import CharacterAudit
-        character_ids = CharacterAudit.objects.values_list(
-            'character__character_id', flat=True
-        ).distinct()
+        character_ids.update(
+            CharacterAudit.objects.values_list(
+                'character__character_id', flat=True
+            ).distinct()
+        )
     except ImportError:
-        from esi.models import Token
-        character_ids = Token.objects.filter(
+        pass
+
+    from esi.models import Token
+    character_ids.update(
+        Token.objects.filter(
             scopes__name='esi-industry.read_character_mining.v1'
         ).values_list('character_id', flat=True).distinct()
+    )
 
     total_synced = 0
     errors = 0
