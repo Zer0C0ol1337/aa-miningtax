@@ -19,9 +19,8 @@ def payment_code_for(corp_id, month, year):
 def _get_treasury_token_for_config(config):
     """
     Gets a valid token with the esi-wallet.read_corporation_wallets.v1 scope
-    for a specific treasury corp. Still needed even on the Corptools-first
-    path: Corptools' own wallet sync requires exactly this scope on one of
-    its own audited characters, and the ESI fallback below needs it directly.
+    for a specific treasury corp — used by the ESI fallback when Corptools
+    doesn't audit the treasury corp.
     """
     from esi.models import Token
     from allianceauth.eveonline.models import EveCharacter
@@ -46,25 +45,28 @@ def _get_treasury_token_for_config(config):
     return None
 
 
-def _get_corptools_journal(config):
+def _get_corptools_journal(config, year, month):
     """
-    Reads the treasury corp's wallet journal from Corptools' own database
-    instead of ESI. Returns None if Corptools isn't installed, hasn't
-    audited this corp yet, or has no entry for the configured division —
-    any of which means "try ESI instead", not "this corp has no journal".
+    The treasury corp's wallet journal for one division, from Corptools.
 
-    Corptools syncs this on its own schedule regardless of this plugin, so
-    reading it here costs no ESI call at all for a corp it already tracks.
-    The catch, and the reason the manual "Check Payments Now" button still
-    goes to ESI (see check_corp_payments): a DB read is only as fresh as
-    Corptools' last sync, whereas a payment code only becomes relevant from
-    the 2nd of the month onward anyway — the automatic daily check has
-    plenty of time to catch up regardless of that lag, which is why it's
-    fine to read from here.
+    The primary source; returns None when Corptools isn't installed, hasn't
+    audited the treasury corp, or has never synced the configured division —
+    any of which means "ask ESI instead". A division it knows but with no
+    matching entries is a real answer and returns [].
+
+    Only entries from the first day of the billed month onward are read: a
+    payment for August cannot have arrived before August began, and without
+    that floor every check loaded the division's entire history.
+
+    Corptools syncs this on its own schedule; since a payment code only
+    reveals on the 2nd of the following month, that lag never matters —
+    for the automatic daily check or the manual button alike.
     """
     try:
         from corptools.models import CorporationAudit
-        from corptools.models.wallets import CorporationWalletJournalEntry
+        from corptools.models.wallets import (
+            CorporationWalletDivision, CorporationWalletJournalEntry,
+        )
     except ImportError:
         return None
 
@@ -74,24 +76,18 @@ def _get_corptools_journal(config):
     if not audit:
         return None
 
-    entries = CorporationWalletJournalEntry.objects.filter(
-        division__corporation=audit,
-        division__division=config.wallet_division,
-    )
-    # An empty queryset here is ambiguous the same way _get_corptools_entries()
-    # was for the mining ledger: it could mean "no transactions yet" or "this
-    # division was never actually synced". .exists() on the DIVISION itself
-    # (not the journal) is the more honest signal — a division Corptools has
-    # never seen at all means "don't trust this, ask ESI", while a division
-    # that exists but genuinely has no matching entries yet is a real answer.
-    from corptools.models.wallets import CorporationWalletDivision
-    division_known = CorporationWalletDivision.objects.filter(
+    if not CorporationWalletDivision.objects.filter(
         corporation=audit, division=config.wallet_division
-    ).exists()
-    if not division_known:
+    ).exists():
         return None
 
-    return list(entries)
+    return list(
+        CorporationWalletJournalEntry.objects.filter(
+            division__corporation=audit,
+            division__division=config.wallet_division,
+            date__date__gte=date(year, month, 1),
+        )
+    )
 
 
 def _match_payments_against_journal(journal, year, month, open_records, source_label):
@@ -156,30 +152,22 @@ def _match_payments_against_journal(journal, year, month, open_records, source_l
     return matched
 
 
-def _check_payments_for_treasury(config, year, month, open_records, prefer_corptools=True):
+def _check_payments_for_treasury(config, year, month, open_records):
     """
-    Checks the wallet journal of ONE treasury corp against the given open
-    billing records.
-
-    prefer_corptools=True (the default, used by the daily automatic check)
-    tries Corptools' own synced journal first, falling back to a live ESI
-    call only if Corptools has no data for this corp/division yet.
-    prefer_corptools=False (used by the manual "Check Payments Now" button)
-    skips straight to ESI, for the case an officer wants to know right now
-    rather than whenever Corptools last happened to sync — the whole point
-    of a manual, on-demand check.
+    Checks ONE treasury corp's wallet journal against the given open billing
+    records: Corptools' synced journal first, a live ESI call only when
+    Corptools has no data for this corp/division.
     """
-    if prefer_corptools:
-        journal = _get_corptools_journal(config)
-        if journal is not None:
-            logger.debug(
-                f'Treasury {config.corporation.corporation_name} (division {config.wallet_division}): '
-                f'{len(journal)} journal entries from Corptools'
-            )
-            return _match_payments_against_journal(
-                journal, year, month, open_records,
-                source_label=f'{config.corporation.corporation_name} via Corptools',
-            )
+    journal = _get_corptools_journal(config, year, month)
+    if journal is not None:
+        logger.debug(
+            f'Treasury {config.corporation.corporation_name} (division {config.wallet_division}): '
+            f'{len(journal)} journal entries from Corptools'
+        )
+        return _match_payments_against_journal(
+            journal, year, month, open_records,
+            source_label=f'{config.corporation.corporation_name} via Corptools',
+        )
 
     from .services import _get_esi_client
 
@@ -195,18 +183,21 @@ def _check_payments_for_treasury(config, year, month, open_records, prefer_corpt
             division=config.wallet_division,
             token=token
         ).results()
-        logger.debug(f'Treasury {config.corporation.corporation_name} (division {config.wallet_division}): {len(journal)} journal entries retrieved via ESI')
+        logger.debug(
+            f'Treasury {config.corporation.corporation_name} (division {config.wallet_division}): '
+            f'{len(journal)} journal entries via ESI'
+        )
     except Exception as e:
         logger.warning(f'Treasury {config.corporation.corporation_name}: wallet journal request failed: {e}')
         return 0
 
     return _match_payments_against_journal(
         journal, year, month, open_records,
-        source_label=config.corporation.corporation_name,
+        source_label=f'{config.corporation.corporation_name} via ESI',
     )
 
 
-def check_corp_payments(year, month, prefer_corptools=True):
+def check_corp_payments(year, month):
     """
     Checks the wallet journals of ALL active treasury configs for incoming
     payments and matches them against open AllianceBillingRecord entries
@@ -214,18 +205,10 @@ def check_corp_payments(year, month, prefer_corptools=True):
     field, plus amount + sender corp.
     A billing record already matched in one treasury is not checked again
     in another.
-
-    prefer_corptools is passed straight through to _check_payments_for_treasury
-    — see there for what it changes. The daily automatic sync leaves it at the
-    default (True): payment codes only reveal from the 2nd of the month, so
-    there's no urgency that would make Corptools' own sync lag matter. The
-    manual "Check Payments Now" button passes False, since asking for that
-    explicitly IS the urgency.
     """
     configs = TreasuryConfig.objects.filter(active=True).select_related('corporation')
-    config_count = configs.count()
 
-    if config_count == 0:
+    if not configs.exists():
         logger.warning(
             'No active TreasuryConfig found. Please add at least one receiving '
             'corporation in the Settings UI (Treasury tab).'
@@ -249,9 +232,7 @@ def check_corp_payments(year, month, prefer_corptools=True):
         still_open = [r for r in open_records if not r.paid]
         if not still_open:
             break
-
-        matched = _check_payments_for_treasury(config, year, month, still_open, prefer_corptools=prefer_corptools)
-        total_matched += matched
+        total_matched += _check_payments_for_treasury(config, year, month, still_open)
 
     logger.info(f'Payment check for {month:02d}/{year} complete: {total_matched}/{open_count} corp(s) marked as paid')
     return total_matched

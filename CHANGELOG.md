@@ -1,6 +1,28 @@
 # Changelog
 
 
+## [0.10.18] - 2026-09-24
+
+### Changed
+- **Local data first everywhere, ESI only when nothing local has the answer.** Every lookup now follows the same order: Corptools (and eve_sde, which ships with Corptools 3.4) → eveuniverse → ESI. Mining ledgers, treasury wallet journals, character corp history, structure names, the Settings structure search and sovereignty systems read Corptools first; ore types, ore classification, the ore import, system names and moon lists read eve_sde first. ESI stays as the fallback everywhere, so nothing depends on Corptools being installed — but where it is, ESI is only reached for a character, corp or structure it doesn't know
+- **eve_sde (CCP's static data export, loaded by Corptools 3.4) is used directly.** The ore import used to walk ESI group by group — 41 requests — and now reads the same data locally with none
+- **Market prices come from eveuniverse when its prices are at most 24 hours old** — the same `/markets/prices/` data ESI returns, so the price basis and every bill are unchanged. Older than that means eveuniverse's own price task isn't scheduled on the install, and ESI is asked instead rather than pricing from a stale table
+- **Sovereignty systems come from Corptools' sovereignty hubs first**, ESI's public sovereignty map only when Corptools has none. When neither source reports a system, the existing list is kept instead of emptying every system dropdown
+- **The payment check reads the wallet journal only from the first day of the billed month** instead of the division's entire history
+- **Registering an alliance's corps goes through Alliance Auth's own `populate_alliance()`**, which also sets each member corp's alliance assignment the taxable-scope check relies on
+- **Structure suggestions in Settings (Moon Rentals, Alliance Moons) list Corptools' structures as well as the ones seen in the mining ledger**, so a moon drill nobody has mined at yet can be picked. Plain system names — stored in the ledger for belt mining — and unresolved placeholders are no longer offered as structures
+
+### Fixed
+- **The Corptools mining-ledger path had never worked since Corptools 3.4.** It read `type_name.type_id` and `system.solar_system_id`, but Corptools 3.4 points those relations at eve_sde, whose models call the field `id`. Every read raised, was logged as a "Corptools read error" and fell through to ESI — so the Corptools-first behaviour 0.10.17 describes for personal mining ledgers was never actually in effect. Reads the foreign-key ids directly now, related names in the same query, limited to the last 30 days (the window ESI itself returns) instead of a pilot's entire history
+
+### Removed
+- **The unused corp structure picker endpoint** (`api/structures/`). No template has called it since the system-based structure search replaced it, and it carried an ESI call of its own
+
+### Notes
+- No migration. Old billing records are unaffected: closed months are never recalculated automatically, and paid records are never overwritten
+- Corptools remains optional; without it every path falls back to ESI as before
+
+
 ## [0.10.17] - 2026-09-22
 
 ### Added

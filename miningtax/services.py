@@ -1,7 +1,9 @@
 import logging
+from datetime import timedelta
 
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 from .models import MiningLedgerEntry, OreCategory
 
@@ -9,55 +11,57 @@ logger = logging.getLogger(__name__)
 
 STRUCTURE_ID_THRESHOLD = 100_000_000
 
+# How far back the personal ledger is re-read from Corptools on each sync.
+# Mirrors the 30 days ESI itself returned, which is what every sync so far was
+# actually built on. Corptools keeps a pilot's entire history, so without a
+# window every nightly run would re-walk months that are long settled.
+CORPTOOLS_LEDGER_WINDOW_DAYS = 30
+
 
 # ─── CORPTOOLS INTEGRATION ────────────────────────────────────────────────────
 
 def _get_corptools_entries(character):
     """
-    Reads mining ledger entries from the Corptools DB for this character.
+    Reads a character's personal (belt/anomaly) mining ledger from Corptools.
 
-    Returns None whenever ESI should be tried instead — not just when
-    Corptools is missing entirely, but also when Corptools IS installed and
-    simply hasn't audited this particular character yet. Returning [] for
-    that second case used to look like "Corptools has data, and it's empty",
-    which sync_character_mining() (correctly) never falls back from — so a
-    character with a real ESI mining token, but no CharacterAudit yet, was
-    silently skipped forever, with nothing synced and no error to notice.
-    "Corptools doesn't know this character" and "Corptools confirms they
-    mined nothing" are different facts; only the second one should mean
-    "don't bother asking ESI".
+    The primary source; ESI is only asked for a character Corptools has no
+    CharacterAudit for (this returns None then, and sync_character_mining()
+    falls back). A list, possibly empty, means Corptools knows the character.
+
+    Reads the foreign-key ids directly (type_name_id, system_id). Corptools 3.x
+    points these at eve_sde, whose models call their primary key `id`; the
+    previous version asked for `.type_id` and `.solar_system_id`, which do not
+    exist there. Every read raised, was logged as a "Corptools read error" and
+    quietly fell through to ESI — so until 0.10.18 this path had never
+    actually been used.
     """
     try:
         from corptools.models import CharacterMiningLedger, CharacterAudit
-
-        audit = CharacterAudit.objects.filter(
-            character__character_id=character.character_id
-        ).first()
-
-        if not audit:
-            return None
-
-        entries = CharacterMiningLedger.objects.filter(
-            character=audit
-        ).select_related('type_name', 'system')
-
-        result = []
-        for e in entries:
-            result.append({
-                'date': e.date,
-                'type_id': e.type_name.type_id,
-                'type_name': e.type_name.name,
-                'solar_system_id': e.system.solar_system_id,
-                'solar_system_name': e.system.name,
-                'quantity': e.quantity,
-            })
-        return result
-
     except ImportError:
         return None
-    except Exception as e:
-        logger.warning(f'Corptools read error for {character.character_name}: {e}')
+
+    audit = CharacterAudit.objects.filter(
+        character__character_id=character.character_id
+    ).first()
+    if not audit:
         return None
+
+    since = timezone.now().date() - timedelta(days=CORPTOOLS_LEDGER_WINDOW_DAYS)
+    entries = CharacterMiningLedger.objects.filter(
+        character=audit, date__gte=since,
+    ).select_related('type_name', 'system')
+
+    return [
+        {
+            'date': e.date,
+            'type_id': e.type_name_id,
+            'type_name': e.type_name.name if e.type_name else f'Type {e.type_name_id}',
+            'solar_system_id': e.system_id,
+            'solar_system_name': e.system.name if e.system else '',
+            'quantity': e.quantity,
+        }
+        for e in entries
+    ]
 
 
 def _structure_quantity(character, date, type_id):
@@ -121,16 +125,13 @@ def _save_non_structure_entry(character, date, type_id, type_name,
 
 def sync_character_mining(character):
     """
-    Syncs personal mining data for a character.
-    1. Corptools DB (no ESI call)
-    2. Fallback: own ESI sync
+    Syncs one character's personal mining: Corptools first, ESI only for a
+    character Corptools doesn't audit.
     """
-    corptools_data = _get_corptools_entries(character)
-
-    if corptools_data is not None:
-        return _sync_from_corptools(character, corptools_data)
-    else:
-        return _sync_from_esi(character)
+    entries = _get_corptools_entries(character)
+    if entries is not None:
+        return _sync_from_corptools(character, entries)
+    return _sync_from_esi(character)
 
 
 def _sync_from_corptools(character, entries):
@@ -150,7 +151,7 @@ def _sync_from_corptools(character, entries):
 
 def _sync_from_esi(character):
     """
-    Fallback ESI sync when Corptools is not available.
+    Fallback for a character Corptools doesn't audit.
     Does not overwrite an already-present, more precise corp observer entry.
     """
     try:
@@ -182,9 +183,9 @@ def _sync_from_esi(character):
 
     saved = 0
     for entry in ledger:
-        type_name = _get_type_name_db_first(entry.type_id, esi)
+        type_name = _get_type_name_db_first(entry.type_id, esi=esi)
         location_id = getattr(entry, 'solar_system_id', None)
-        location_name = _get_location_name_db_first(location_id, token, esi)
+        location_name = _get_location_name_db_first(location_id, token=token, esi=esi)
 
         if _save_non_structure_entry(
             character, entry.date, entry.type_id, type_name,
@@ -233,7 +234,10 @@ def sync_corp_observer(corp_id, corp_name, token):
 
     for observer in observers:
         observer_id = observer.observer_id
-        structure_name = _get_location_name_db_first(observer_id, token, esi)
+        # The token is passed along so a structure Corptools doesn't know yet can
+        # still be named — the one place a name lookup may reach ESI, because this
+        # sync is an ESI call regardless and already holds the corp token.
+        structure_name = _get_location_name_db_first(observer_id, token=token, esi=esi)
 
         try:
             entries = esi.client.Industry.GetCorporationCorporationIdMiningObserversObserverId(
@@ -267,7 +271,7 @@ def sync_corp_observer(corp_id, corp_name, token):
                     logger.warning(f'Could not create character {entry.character_id}: {e}')
                     continue
 
-            type_name = _get_type_name_db_first(entry.type_id, esi)
+            type_name = _get_type_name_db_first(entry.type_id)
 
             # The structure has to be part of the lookup, not just the payload:
             # keyed on character/date/ore alone this would match a belt entry
@@ -398,18 +402,16 @@ def sync_all_characters():
 
 # ─── SOVEREIGNTY SYNC ──────────────────────────────────────────────────────────
 
-def _repair_unresolved_system_names(esi):
+def _repair_unresolved_system_names():
     """
-    Re-resolves SovSystem rows whose name is still a placeholder. Returns how
-    many were fixed. Cheap in the normal case: the queryset is empty and no ESI
-    call happens at all.
+    Re-resolves SovSystem rows whose name is still a placeholder, from eve_sde.
+    Returns how many were fixed. Cheap in the normal case: nothing matches.
     """
     from .models import SovSystem
 
-    broken = SovSystem.objects.filter(system_name__startswith='Unknown (')
     repaired = 0
-    for row in broken:
-        name = _get_location_name_db_first(row.system_id, None, esi)
+    for row in SovSystem.objects.filter(system_name__startswith='Unknown ('):
+        name = _get_location_name_db_first(row.system_id)
         if name and not name.startswith('Unknown ('):
             row.system_name = name
             row.save(update_fields=['system_name'])
@@ -417,83 +419,67 @@ def _repair_unresolved_system_names(esi):
     return repaired
 
 
-def sync_sov_systems(force_recovery=False):
+def _sov_matches_from_esi(target_corp_ids, target_alliance_ids):
     """
-    Refreshes the SovSystem cache from ESI's public sovereignty data
-    (no token needed). Rebuilds the table fully each run so it always reflects
-    current sovereignty — no manual system list to maintain.
-
-    The resulting list feeds the solar-system dropdowns on the Alliance Moons
-    tab. It has no effect on taxation — every ledger entry is taxed regardless
-    of where it was mined.
-
-    force_recovery lifts the once-a-day limit on discarding a stale ETag. It is
-    set when an officer presses the sync button, since that is an explicit
-    request; the scheduled daily run leaves it off and stays polite.
+    Fallback for sync_sov_systems() when Corptools tracks no hub for the
+    configured corps: the systems they hold per ESI's public sovereignty map.
+    Returns [(system_id, corp_id), ...], or None if ESI couldn't be read.
     """
-    from django.core.cache import cache
-    from .models import SovFilterConfig, SovSystem
-
-    recovery_key = 'miningtax:sov_forced_refetch'
-    if force_recovery:
-        cache.delete(recovery_key)
-
-    configs = SovFilterConfig.objects.all().select_related('corporation')
-    if not configs.exists():
-        return 0
+    from esi.exceptions import HTTPNotModified
 
     esi = _get_esi_client()
 
-    from esi.exceptions import HTTPNotModified
-
-    def _fetch_sov_map(force=False):
+    def _fetch(force=False):
         # Single, unpaginated payload — hence result() rather than results().
-        # results() would wrap the whole response in a one-element list, which
-        # previously made the map look like it contained exactly one system.
         return esi.client.Sovereignty.GetSovereigntySystems().result(force_refresh=force)
 
     try:
-        sov_map = _fetch_sov_map()
-    except HTTPNotModified:
-        # Sovereignty is unchanged since the last fetch, so the stored ETag is
-        # doing its job and there is nothing to update.
-        #
-        # Unless our table is empty: then the ETag was stored by an earlier run
-        # that fetched successfully but failed to process the result, and ESI
-        # will keep answering 304 forever while we stay at zero systems. In that
-        # case the ETag has to be discarded and the data pulled again.
-        if SovSystem.objects.exists():
-            # Sovereignty itself is unchanged, but rows stored while name
-            # resolution was failing still carry an "Unknown (id)" placeholder.
-            # Those are repaired here, since the early return below would
-            # otherwise leave them broken until sovereignty happens to change.
-            repaired = _repair_unresolved_system_names(esi)
-            count = SovSystem.objects.count()
-            suffix = f', {repaired} name(s) repaired' if repaired else ''
-            logger.info(f'Sovereignty unchanged since last sync — {count} system(s) tracked{suffix}')
-            return count
-
-        # Recovery is rate-limited to once a day. Without that guard an install
-        # whose reference corporation legitimately holds no sovereignty would
-        # keep an empty table forever and force a full refetch on every single
-        # sync — defeating the point of the ETag entirely.
-        if cache.get(recovery_key):
-            logger.info(
-                'Sovereignty unchanged and still no systems stored; forced refetch '
-                'already attempted recently, honouring the ETag. Press the sync '
-                'button in Settings to retry immediately.'
-            )
-            return 0
-
-        cache.set(recovery_key, True, 60 * 60 * 24)
-        logger.info('Sovereignty unchanged but no systems stored — discarding ETag once and refetching')
         try:
-            sov_map = _fetch_sov_map(force=True)
-        except Exception as e:
-            logger.warning(f'Forced sovereignty map request failed: {e}')
-            return 0
+            sov_map = _fetch()
+        except HTTPNotModified:
+            # Only reached when Corptools had nothing, so the data is not in
+            # hand — honouring the ETag would leave the list without systems.
+            sov_map = _fetch(force=True)
     except Exception as e:
         logger.warning(f'Sovereignty map request failed: {e}')
+        return None
+
+    matched = []
+    for entry in getattr(sov_map, 'solar_systems', None) or []:
+        claim = getattr(entry, 'claim', None)
+        # aiopenapi3 renders the claim union as a RootModel, so the variant
+        # (alliance / faction / unclaimed) sits one level down under .root.
+        variant = getattr(claim, 'root', claim)
+        alliance_claim = getattr(variant, 'alliance', None)
+        if not alliance_claim:
+            continue
+        alliance_id = getattr(alliance_claim, 'alliance_id', None)
+        corp_id = getattr(alliance_claim, 'corporation_id', None)
+        if alliance_id in target_alliance_ids or corp_id in target_corp_ids:
+            matched.append((entry.solar_system_id, corp_id))
+    return matched
+
+
+def sync_sov_systems():
+    """
+    Refreshes the SovSystem list: the sovereignty hubs Corptools already
+    tracks first, ESI's public sovereignty map only if Corptools has none.
+
+    A system counts when its holder is one of the configured reference corps
+    or belongs to the alliance of one — sovereignty inside an alliance is
+    normally held by a single holding corp, which need not be the one
+    configured here.
+
+    If neither source reports a system, the existing list is kept and a
+    warning logged rather than emptying every system dropdown.
+
+    Feeds the solar-system dropdowns on the Alliance Moons tab only — it has
+    no effect on taxation.
+    """
+    from .models import SovFilterConfig, SovSystem
+
+    configs = SovFilterConfig.objects.select_related('corporation', 'corporation__alliance')
+    if not configs.exists():
         return 0
 
     target_corp_ids = set()
@@ -504,70 +490,52 @@ def sync_sov_systems(force_recovery=False):
         if corp.alliance_id:
             target_alliance_ids.add(corp.alliance.alliance_id)
 
-    # Response shape (compatibility date 2026-06-09):
-    #   SovereigntySystems.solar_systems[] -> { solar_system_id, claim }
-    # where claim is one of three variants: an alliance claim (carrying both
-    # alliance_id and the corporation_id of the sov holder), a faction claim,
-    # or simply unclaimed. Only alliance claims are of interest here.
-    solar_systems = getattr(sov_map, 'solar_systems', None) or []
-
     matched = []
-    for entry in solar_systems:
-        claim = getattr(entry, 'claim', None)
-        # aiopenapi3 renders the claim union as a RootModel, so the actual
-        # variant (alliance / faction / unclaimed) sits one level down under
-        # .root. Faction and unclaimed systems carry no alliance and are skipped.
-        variant = getattr(claim, 'root', claim)
-        alliance_claim = getattr(variant, 'alliance', None)
-        if not alliance_claim:
-            continue
-
-        alliance_id = getattr(alliance_claim, 'alliance_id', None)
-        corp_id = getattr(alliance_claim, 'corporation_id', None)
-
-        if alliance_id in target_alliance_ids or corp_id in target_corp_ids:
-            matched.append((entry.solar_system_id, corp_id))
+    source = 'Corptools'
+    try:
+        from corptools.models.sovereignty import SovereigntyHub
+        matched = list(
+            SovereigntyHub.objects.filter(
+                Q(corporation__corporation__corporation_id__in=target_corp_ids)
+                | Q(corporation__corporation__alliance__alliance_id__in=target_alliance_ids)
+            ).values_list('solar_system_id', 'corporation__corporation__corporation_id').distinct()
+        )
+    except ImportError:
+        pass
 
     if not matched:
-        # Dump the alliance claims that ARE present so it's obvious which IDs
-        # the sov data actually carries versus what we're matching against —
-        # far quicker than guessing why nothing lined up.
-        sample = {}
-        for entry in solar_systems:
-            claim = getattr(entry, 'claim', None)
-            variant = getattr(claim, 'root', claim)
-            ac = getattr(variant, 'alliance', None)
-            if ac:
-                key = (getattr(ac, 'alliance_id', None), getattr(ac, 'corporation_id', None))
-                sample[key] = sample.get(key, 0) + 1
-        top = sorted(sample.items(), key=lambda kv: kv[1], reverse=True)[:10]
-        logger.warning(
-            f'Sovereignty data covered {len(solar_systems)} system(s), none claimed by '
-            f'corp(s) {target_corp_ids or "—"} or alliance(s) {target_alliance_ids or "—"}. '
-            f'Present (alliance_id, corporation_id) → count: {top}'
-        )
+        source = 'ESI'
+        matched = _sov_matches_from_esi(target_corp_ids, target_alliance_ids)
+        if matched is None:
+            return SovSystem.objects.count()
 
-    updated = 0
+    if not matched:
+        repaired = _repair_unresolved_system_names()
+        logger.warning(
+            f'Neither Corptools nor ESI reports a sovereignty system for corp(s) '
+            f'{sorted(target_corp_ids)} or alliance(s) {sorted(target_alliance_ids)} — '
+            f'keeping the existing {SovSystem.objects.count()} system(s).'
+            + (f' {repaired} name(s) repaired.' if repaired else '')
+        )
+        return SovSystem.objects.count()
+
     seen_ids = set()
     for system_id, corp_id in matched:
         seen_ids.add(system_id)
-        system_name = _get_location_name_db_first(system_id, None, esi)
         SovSystem.objects.update_or_create(
             system_id=system_id,
             defaults={
-                'system_name': system_name,
-                # Fall back to a configured corp so the non-null column is
-                # always satisfied, even if ESI omits the sov holder.
+                'system_name': _get_location_name_db_first(system_id),
                 'corporation_id': corp_id or next(iter(target_corp_ids), 0),
             }
         )
-        updated += 1
 
-    # Remove systems no longer held by any tracked corp
     removed, _ = SovSystem.objects.exclude(system_id__in=seen_ids).delete()
-
-    logger.info(f'Sovereignty sync complete — {updated} system(s) tracked, {removed} stale entrie(s) removed')
-    return updated
+    logger.info(
+        f'Sovereignty sync complete ({source}) — {len(seen_ids)} system(s) tracked, '
+        f'{removed} stale entrie(s) removed'
+    )
+    return len(seen_ids)
 
 
 # ─── ESI CLIENT ────────────────────────────────────────────────────────────────
@@ -583,32 +551,41 @@ def _get_esi_client():
             compatibility_date="2026-06-09",
             ua_appname="EVE Mining Manager Plugin",
             ua_version="1.0",
-            tags=['Industry', 'Universe', 'Market', 'Wallet', 'Alliance', 'Sovereignty', 'Corporation', 'Search', 'Character'],
+            # Every tag a fallback may still need. Corptools and eve_sde are
+            # asked first everywhere; these are for what they don't have.
+            # 'Alliance' is gone — alliance corp lists go through Alliance
+            # Auth's own populate_alliance() since 0.10.18.
+            tags=['Industry', 'Universe', 'Market', 'Wallet', 'Sovereignty', 'Corporation', 'Search', 'Character'],
         )
     return _esi_client
 
 
-def _get_type_name_db_first(type_id, esi):
-    """Ore type name, cheapest reliable source first.
-
-    eveuniverse (when installed) is authoritative — its names come straight from
-    ESI — so it's checked before the local OreCategory table. This matters
-    because a stale or mis-seeded OreCategory row would otherwise bake a wrong
-    name into every synced ledger entry. Order: eveuniverse → OreCategory →
-    existing ledger rows → live ESI.
+def _get_type_name_db_first(type_id, esi=None):
+    """
+    Ore type name, local sources first: eve_sde (CCP's static data export,
+    loaded for Corptools), then eveuniverse, then OreCategory, then any
+    existing ledger row. ESI only if none of them knows the type — which in
+    practice means ore added by an expansion before either was refreshed.
     """
     try:
-        from eveuniverse.models import EveType
-        et = EveType.objects.filter(id=type_id).first()
-        if et and et.name:
-            return et.name
+        from eve_sde.models import ItemType
+        name = ItemType.objects.filter(id=type_id).values_list('name', flat=True).first()
+        if name:
+            return name
     except ImportError:
         pass
 
     try:
-        return OreCategory.objects.get(type_id=type_id).type_name
-    except OreCategory.DoesNotExist:
+        from eveuniverse.models import EveType
+        name = EveType.objects.filter(id=type_id).values_list('name', flat=True).first()
+        if name:
+            return name
+    except ImportError:
         pass
+
+    name = OreCategory.objects.filter(type_id=type_id).values_list('type_name', flat=True).first()
+    if name:
+        return name
 
     existing = MiningLedgerEntry.objects.filter(
         type_id=type_id
@@ -617,14 +594,82 @@ def _get_type_name_db_first(type_id, esi):
         return existing
 
     try:
+        esi = esi or _get_esi_client()
         result = esi.client.Universe.GetUniverseTypesTypeId(type_id=type_id).results()
         return result[0].name if result else f'Type {type_id}'
     except Exception:
         return f'Type {type_id}'
 
 
-def _get_location_name_db_first(location_id, token, esi):
-    """Structure/system name: check DB first, then ESI."""
+def _resolve_location_name_local(location_id):
+    """
+    A location name from local sources only, ignoring what the ledger holds.
+
+    Solar systems come from eve_sde, then eveuniverse. Player structures come
+    from Corptools —
+    its structure list (structures of corps it audits) first, then its general
+    location cache (anything it has seen through assets or similar). Returns
+    None when neither knows the location.
+    """
+    if location_id > STRUCTURE_ID_THRESHOLD:
+        try:
+            from corptools.models import EveLocation
+            from corptools.models.structures import Structure
+        except ImportError:
+            return None
+        name = Structure.objects.filter(structure_id=location_id).values_list('name', flat=True).first()
+        if name:
+            return name
+        return EveLocation.objects.filter(location_id=location_id).values_list('location_name', flat=True).first()
+
+    try:
+        from eve_sde.models import SolarSystem
+        name = SolarSystem.objects.filter(id=location_id).values_list('name', flat=True).first()
+        if name:
+            return name
+    except ImportError:
+        pass
+
+    try:
+        from eveuniverse.models import EveSolarSystem
+    except ImportError:
+        return None
+    return EveSolarSystem.objects.filter(id=location_id).values_list('name', flat=True).first()
+
+
+def _system_name_from_esi(system_id):
+    """A solar system's name from ESI (public), or None. Fallback behind eve_sde."""
+    from esi.exceptions import HTTPNotModified
+
+    esi = _get_esi_client()
+
+    def _fetch(force=False):
+        return esi.client.Universe.GetUniverseSystemsSystemId(
+            system_id=system_id
+        ).results(force_refresh=force)
+
+    try:
+        try:
+            system = _fetch()
+        except HTTPNotModified:
+            system = _fetch(force=True)
+        return system[0].name if system else None
+    except Exception:
+        return None
+
+
+def _get_location_name_db_first(location_id, token=None, esi=None):
+    """
+    Structure or system name: the ledger first, then local data (eve_sde for
+    systems, Corptools for structures), ESI last.
+
+    A system unknown to eve_sde is asked from ESI's public endpoint. A
+    structure needs a token that can see it, so ESI is only tried when the
+    caller passes one — the corp observer sync and the personal ESI fallback
+    do. That keeps tax-free moons working for a drill Corptools hasn't picked
+    up: the exemption matches on the structure's name, and a placeholder
+    matches nothing.
+    """
     if location_id is None:
         return ''
 
@@ -634,41 +679,32 @@ def _get_location_name_db_first(location_id, token, esi):
     if existing:
         return existing
 
-    from esi.exceptions import HTTPNotModified
+    name = _resolve_location_name_local(location_id)
+    if name:
+        return name
 
-    name = f'Unknown ({location_id})'
-    if location_id > STRUCTURE_ID_THRESHOLD:
-        def _fetch_structure(force=False):
+    if location_id <= STRUCTURE_ID_THRESHOLD:
+        return _system_name_from_esi(location_id) or f'Unknown ({location_id})'
+
+    if token is not None and esi is not None:
+        from esi.exceptions import HTTPNotModified
+
+        def _fetch(force=False):
             return esi.client.Universe.GetUniverseStructuresStructureId(
                 structure_id=location_id, token=token
             ).results(force_refresh=force)
 
         try:
             try:
-                structure = _fetch_structure()
+                structure = _fetch()
             except HTTPNotModified:
-                # ESI holds an ETag for this ID while we have no name in hand,
-                # so honouring the 304 would store a permanent placeholder.
-                # Names are static, so one forced refetch settles it for good.
-                structure = _fetch_structure(force=True)
-            name = structure[0].name if structure else f'Structure ({location_id})'
-        except Exception:
-            name = f'Structure ({location_id})'
-    else:
-        def _fetch_system(force=False):
-            return esi.client.Universe.GetUniverseSystemsSystemId(
-                system_id=location_id
-            ).results(force_refresh=force)
-
-        try:
-            try:
-                system = _fetch_system()
-            except HTTPNotModified:
-                system = _fetch_system(force=True)
-            name = system[0].name if system else name
+                structure = _fetch(force=True)
+            if structure:
+                return structure[0].name
         except Exception:
             pass
-    return name
+
+    return f'Structure ({location_id})'
 
 
 # ─── MARKET PRICES ────────────────────────────────────────────────────────────
@@ -949,8 +985,44 @@ def _fetch_janice_chunk(type_ids, api_key):
     return prices
 
 
+# eveuniverse's market prices are only trusted if its own price task ran this
+# recently. Older than that means the task isn't scheduled on this install,
+# and pricing from a stale table would under- or over-charge silently.
+EVEUNIVERSE_PRICE_MAX_AGE_HOURS = 24
+
+
+def _prices_from_eveuniverse():
+    """
+    All market prices from eveuniverse's EveMarketPrice table, or None when
+    eveuniverse isn't installed, has no prices, or its newest price is older
+    than EVEUNIVERSE_PRICE_MAX_AGE_HOURS.
+
+    The same data ESI's /markets/prices/ returns — eveuniverse stores exactly
+    that response — so the price basis, and therefore every bill, is
+    unchanged whichever of the two answers.
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+
+    try:
+        from eveuniverse.models import EveMarketPrice
+    except ImportError:
+        return None
+
+    newest = EveMarketPrice.objects.order_by('-updated_at').values_list('updated_at', flat=True).first()
+    if newest is None or newest < timezone.now() - timedelta(hours=EVEUNIVERSE_PRICE_MAX_AGE_HOURS):
+        return None
+
+    return {
+        type_id: float(adjusted or average or 0)
+        for type_id, adjusted, average in
+        EveMarketPrice.objects.values_list('eve_type_id', 'adjusted_price', 'average_price')
+    }
+
+
 def _fetch_bulk_prices():
-    """Single ESI call for all EVE market prices via /markets/prices/.
+    """All EVE market prices: eveuniverse first when its prices are fresh,
+    otherwise a single ESI call via /markets/prices/.
 
     ETags are respected: the ESI client sends the stored ETag, and when ESI
     replies 304 Not Modified it raises HTTPNotModified rather than returning
@@ -963,6 +1035,11 @@ def _fetch_bulk_prices():
 
     CACHE_KEY = 'miningtax:bulk_prices'
     CACHE_TTL = 60 * 60 * 6  # 6h; refreshed whenever ESI reports a change
+
+    local = _prices_from_eveuniverse()
+    if local:
+        logger.debug(f'Market prices from eveuniverse ({len(local)} types)')
+        return local
 
     try:
         from esi.exceptions import HTTPNotModified
@@ -1018,18 +1095,64 @@ def _fetch_bulk_prices():
 ASTEROID_CATEGORY_ID = 25
 
 
-def sync_ore_categories():
+def _ore_groups_from_sde():
     """
-    Imports every mineable type from ESI into OreCategory and classifies it by
-    its group. Walks category 25 -> groups -> types, so the result is complete
-    by construction rather than depending on someone remembering to add an ore.
+    Every published ore group of category 25 with its published types, from
+    eve_sde: [(group_name, [(type_id, type_name), ...]), ...]. None when eve_sde
+    isn't installed or holds no ore groups (not loaded), so the caller can
+    fall back to ESI.
+    """
+    try:
+        from eve_sde.models import ItemGroup, ItemType
+    except ImportError:
+        return None
 
-    Existing rows are updated, which repairs a wrong category from an earlier
-    seed. Returns (imported, updated).
+    groups = list(ItemGroup.objects.filter(category_id=ASTEROID_CATEGORY_ID, published=True))
+    if not groups:
+        return None
+
+    return [
+        (
+            group.name or '',
+            [(tid, name or f'Type {tid}') for tid, name in
+             ItemType.objects.filter(group=group, published=True).values_list('id', 'name')],
+        )
+        for group in groups
+    ]
+
+
+def _ore_groups_from_eveuniverse():
+    """
+    Same shape as _ore_groups_from_sde(), from eveuniverse — the second local
+    source, for installs where eve_sde isn't loaded but eveuniverse holds
+    category 25 (e.g. after eveuniverse_load_types). None when eveuniverse
+    isn't installed or holds no ore groups.
+    """
+    try:
+        from eveuniverse.models import EveGroup, EveType
+    except ImportError:
+        return None
+
+    groups = list(EveGroup.objects.filter(eve_category_id=ASTEROID_CATEGORY_ID, published=True))
+    if not groups:
+        return None
+
+    return [
+        (
+            group.name or '',
+            [(tid, name or f'Type {tid}') for tid, name in
+             EveType.objects.filter(eve_group=group, published=True).values_list('id', 'name')],
+        )
+        for group in groups
+    ]
+
+
+def _ore_groups_from_esi():
+    """
+    Same shape as _ore_groups_from_sde(), walked from ESI — one call per ore
+    group. Fallback when eve_sde isn't available. None if ESI can't be read.
     """
     from esi.exceptions import HTTPNotModified
-    from .billing import classify_group_name, category_from_rules
-    from .models import OreCategory
 
     esi = _get_esi_client()
 
@@ -1048,31 +1171,64 @@ def sync_ore_categories():
         )
     except Exception as e:
         logger.warning(f'Could not load ore category list from ESI: {e}')
-        return 0, 0
-
+        return None
     if not categories:
+        return None
+
+    result = []
+    for group_id in (getattr(categories[0], 'groups', None) or []):
+        try:
+            groups = _call(esi.client.Universe.GetUniverseGroupsGroupId, group_id=group_id)
+        except Exception as e:
+            logger.warning(f'Could not load group {group_id}: {e}')
+            continue
+        if not groups:
+            continue
+        group = groups[0]
+        types = [
+            (tid, _get_type_name_db_first(tid, esi=esi))
+            for tid in (getattr(group, 'types', None) or [])
+        ]
+        result.append((getattr(group, 'name', '') or '', types))
+    return result
+
+
+def sync_ore_categories():
+    """
+    Imports every mineable type into OreCategory and classifies it by its
+    group. Walks category 25 -> groups -> types, so the result is complete by
+    construction rather than depending on someone remembering to add an ore.
+
+    Read from eve_sde first (CCP's static data export, loaded for Corptools —
+    no ESI call at all), then eveuniverse, ESI only when neither has it. Only published
+    groups and types are taken from eve_sde, matching what ESI returns.
+
+    Existing rows are updated, which repairs a wrong category from an earlier
+    seed. Returns (imported, updated).
+    """
+    from .billing import classify_group_name, category_from_rules
+    from .models import OreCategory
+
+    ore_groups = _ore_groups_from_sde()
+    source = 'eve_sde'
+    if ore_groups is None:
+        ore_groups = _ore_groups_from_eveuniverse()
+        source = 'eveuniverse'
+    if ore_groups is None:
+        ore_groups = _ore_groups_from_esi()
+        source = 'ESI'
+    if not ore_groups:
+        logger.warning('Ore import: neither eve_sde nor ESI returned any ore group')
         return 0, 0
 
-    group_ids = getattr(categories[0], 'groups', None) or []
-    logger.info(f'Ore import: {len(group_ids)} group(s) in category {ASTEROID_CATEGORY_ID}')
+    logger.info(f'Ore import ({source}): {len(ore_groups)} group(s) in category {ASTEROID_CATEGORY_ID}')
 
     imported = 0
     updated = 0
     skipped = 0
     fallback_groups = set()
 
-    for group_id in group_ids:
-        try:
-            groups = _call(esi.client.Universe.GetUniverseGroupsGroupId, group_id=group_id)
-        except Exception as e:
-            logger.warning(f'Could not load group {group_id}: {e}')
-            continue
-
-        if not groups:
-            continue
-
-        group = groups[0]
-        group_name = getattr(group, 'name', '')
+    for group_name, types in ore_groups:
         group_category = classify_group_name(group_name)
 
         if not group_category:
@@ -1085,9 +1241,7 @@ def sync_ore_categories():
             group_category = 'Ore'
             fallback_groups.add(group_name)
 
-        for type_id in (getattr(group, 'types', None) or []):
-            name = _get_type_name_db_first(type_id, esi)
-
+        for type_id, name in types:
             # Alliance rules win over EVE's own grouping, and are evaluated per
             # type so a single ore can be pulled out of an otherwise ordinary
             # group — which is the whole point for things like Prismaticite.
@@ -1134,9 +1288,11 @@ def sync_ore_categories():
     return imported, updated
 
 
-def repair_unresolved_ledger_names(esi=None):
+def repair_unresolved_ledger_names():
     """
-    Re-resolves ledger entries whose location is still a placeholder.
+    Re-resolves ledger entries whose location is still a placeholder: local
+    sources first (eve_sde for systems, Corptools for structures), ESI for
+    whatever they don't know.
 
     A lookup that fails once is otherwise permanent: the name is written as
     "Unknown (id)" or "Structure (id)" and nothing ever revisits it, because
@@ -1165,24 +1321,17 @@ def repair_unresolved_ledger_names(esi=None):
     if not location_ids:
         return 0
 
-    if esi is None:
-        esi = _get_esi_client()
-
     logger.info(f'Repairing {len(location_ids)} unresolved location name(s)')
 
+    esi = None
     repaired = 0
     for location_id in location_ids:
-        # Structures need a token that can see them; systems are public. Any
-        # corp mining token will do for the structure case, since that is the
-        # same access the observer sync already relies on.
-        token = None
-        if location_id > STRUCTURE_ID_THRESHOLD:
-            token = _any_corp_mining_token()
-
-        name = _resolve_location_name_fresh(location_id, token, esi)
+        name = _resolve_location_name_local(location_id)
+        if not name:
+            esi = esi or _get_esi_client()
+            name = _resolve_location_name_esi(location_id, esi)
         if not name:
             continue
-
         repaired += MiningLedgerEntry.objects.filter(
             solar_system_id=location_id
         ).exclude(solar_system_name=name).update(solar_system_name=name)
@@ -1192,7 +1341,7 @@ def repair_unresolved_ledger_names(esi=None):
 
 
 def _any_corp_mining_token():
-    """Any valid corp-mining token, used to read structure names."""
+    """Any valid corp-mining token, used to read structure names from ESI."""
     from esi.models import Token
     return (
         Token.objects
@@ -1202,35 +1351,33 @@ def _any_corp_mining_token():
     )
 
 
-def _resolve_location_name_fresh(location_id, token, esi):
+def _resolve_location_name_esi(location_id, esi):
     """
-    Asks ESI for a location name, ignoring what the ledger already holds.
+    Asks ESI for a location name — the fallback behind the local sources in
+    repair_unresolved_ledger_names(). Structures need a token that can see
+    them; any corp mining token will do, since that is the same access the
+    observer sync already relies on. Systems are public. Returns None if ESI
+    has no answer.
+    """
+    if location_id <= STRUCTURE_ID_THRESHOLD:
+        return _system_name_from_esi(location_id)
 
-    _get_location_name_db_first deliberately trusts a stored name, which is
-    exactly wrong when that stored name is the placeholder we are trying to
-    replace — hence this separate path.
-    """
+    token = _any_corp_mining_token()
+    if not token:
+        return None
+
     from esi.exceptions import HTTPNotModified
 
-    def _fetch(op, force=False, **kwargs):
-        try:
-            return op(**kwargs).results(force_refresh=force)
-        except HTTPNotModified:
-            return op(**kwargs).results(force_refresh=True)
+    def _fetch(force=False):
+        return esi.client.Universe.GetUniverseStructuresStructureId(
+            structure_id=location_id, token=token
+        ).results(force_refresh=force)
 
     try:
-        if location_id > STRUCTURE_ID_THRESHOLD:
-            if not token:
-                return None
-            res = _fetch(
-                esi.client.Universe.GetUniverseStructuresStructureId,
-                structure_id=location_id, token=token,
-            )
-        else:
-            res = _fetch(
-                esi.client.Universe.GetUniverseSystemsSystemId,
-                system_id=location_id,
-            )
+        try:
+            res = _fetch()
+        except HTTPNotModified:
+            res = _fetch(force=True)
         return res[0].name if res else None
     except Exception as e:
         logger.debug(f'Could not resolve location {location_id}: {e}')

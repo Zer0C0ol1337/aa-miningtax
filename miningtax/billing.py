@@ -77,36 +77,51 @@ def classify_group_name(group_name):
     return None
 
 
-def _category_from_eveuniverse(type_id):
+def _type_and_group_from_sde(type_id):
     """
-    Derives an ore category from the type's group in eveuniverse, e.g.
-    "Exceptional Moon Asteroids" -> R64, "Harvestable Cloud" -> Gas.
+    A type's own name and its group name, from eve_sde (CCP's static data
+    export, which Corptools already loads).
 
-    This is what keeps newly introduced or simply unseeded ore from silently
-    falling through to the Default rate: the group is authoritative SDE data,
-    so nothing has to be maintained by hand. Returns None when eveuniverse
-    isn't installed or doesn't know the type.
+    Replaces the old eveuniverse-then-ESI chain: eve_sde holds every type in
+    the game, including ore added by the latest expansion as soon as the SDE
+    is refreshed, so there is nothing left for ESI to answer that this can't.
+    Returns ('', '') for an ID eve_sde doesn't know.
+    """
+    try:
+        from eve_sde.models import ItemType
+    except ImportError:
+        return '', ''
+
+    eve_type = ItemType.objects.filter(id=type_id).select_related('group').first()
+    if not eve_type:
+        return '', ''
+    return eve_type.name or '', (eve_type.group.name if eve_type.group else '') or ''
+
+
+def _type_and_group_from_eveuniverse(type_id):
+    """
+    A type's name and group name from eveuniverse — the second local source
+    behind eve_sde. Returns ('', '') when eveuniverse isn't installed or
+    doesn't know the type.
     """
     try:
         from eveuniverse.models import EveType
     except ImportError:
-        return None
+        return '', ''
 
     eve_type = EveType.objects.filter(id=type_id).select_related('eve_group').first()
-    if not eve_type or not eve_type.eve_group:
-        return None
-
-    return classify_group_name(eve_type.eve_group.name)
+    if not eve_type:
+        return '', ''
+    return eve_type.name or '', (eve_type.eve_group.name if eve_type.eve_group else '') or ''
 
 
 def _type_and_group_from_esi(type_id):
     """
     A type's own name and its group name, straight from ESI.
 
-    The last resort when eveuniverse cannot answer — either because it is not
-    installed, or because its type data predates the ore in question. Without
-    this, ore introduced by an expansion sits at the Default rate until someone
-    notices and reloads eveuniverse, which is not a thing anyone thinks to check.
+    The fallback behind eve_sde, for ore an expansion added before eve_sde
+    was refreshed. Without it such ore sits at the Default rate until the
+    SDE is reloaded, which is not a thing anyone thinks to check.
     """
     from .services import _get_esi_client
     from esi.exceptions import HTTPNotModified
@@ -326,31 +341,18 @@ def get_ore_category(type_id):
     if type_id in known:
         return known[type_id]
 
-    name = ''
-    group_name = ''
-    try:
-        from eveuniverse.models import EveType
-        eve_type = EveType.objects.filter(id=type_id).select_related('eve_group').first()
-        if eve_type:
-            name = eve_type.name or ''
-            group_name = eve_type.eve_group.name if eve_type.eve_group else ''
-    except ImportError:
-        pass
+    # The negative answer is remembered. This runs once per ledger entry while
+    # a page renders, so without it an unclassifiable type would cost two ESI
+    # calls on every view — the ore is not going to change group in the
+    # meantime, and a day is soon enough to notice a new rule.
+    miss_key = f'miningtax:unclassifiable:{type_id}'
+    if cache.get(miss_key):
+        return 'Default'
 
+    name, group_name = _type_and_group_from_sde(type_id)
     if not group_name:
-        # eveuniverse either isn't installed or doesn't know this type. Asking
-        # ESI covers ore outside the Asteroid category the bulk import walks,
-        # and ore added after eveuniverse was last loaded.
-        #
-        # The negative answer is remembered as well. This runs once per ledger
-        # entry while a page renders, so without it every unclassifiable type
-        # cost two ESI calls on every single view — the ore is not going to
-        # change group in the meantime, and a day is soon enough to notice a
-        # new rule.
-        miss_key = f'miningtax:unclassifiable:{type_id}'
-        if cache.get(miss_key):
-            return 'Default'
-
+        name, group_name = _type_and_group_from_eveuniverse(type_id)
+    if not group_name:
         name, group_name = _type_and_group_from_esi(type_id)
 
     derived = category_from_rules(name, group_name) or classify_group_name(group_name)
@@ -372,11 +374,11 @@ def get_ore_category(type_id):
         derived = 'Ore'
 
     if not derived:
-        # group_name is empty here — genuinely unresolvable (eveuniverse
-        # doesn't have it and ESI didn't answer), not merely unrecognised.
+        # group_name is empty here — neither eve_sde, eveuniverse nor ESI knows the type,
+        # not merely an unrecognised group.
         logger.info(
             f'Type {type_id} ("{name or "unknown"}") could not be resolved '
-            f'via eveuniverse or ESI, taxed at the Default rate'
+            f'via eve_sde, eveuniverse or ESI, taxed at the Default rate'
         )
         cache.set(f'miningtax:unclassifiable:{type_id}', True, 60 * 60 * 24)
         return 'Default'

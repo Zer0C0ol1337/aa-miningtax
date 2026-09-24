@@ -338,7 +338,7 @@
           </form>
           <p class="text-muted small mt-2">
             <i class="fas fa-info-circle"></i>
-            {% trans "Structure Name suggestions come from structures already seen in the mining ledger — start typing to see matches." %}
+            {% trans "Structure Name suggestions come from Corptools and the mining ledger — start typing to see matches." %}
           </p>
         </div>
       </div>
@@ -1125,7 +1125,7 @@
 
 <script>
 // ─── MOON PICKER ────────────────────────────────────────────────────────────
-// Fills a moon <select> with every moon of the chosen system, fetched from ESI
+// Fills a moon <select> with every moon of the chosen system, read from eve_sde (ESI as fallback)
 // via our own JSON endpoint (results are cached server-side, so repeat picks
 // are instant). Replaces the old free-text field where a single typo silently
 // broke tax exemption matching.
@@ -1175,7 +1175,7 @@ async function loadMoonsInto(systemSelect, moonSelect, preselect) {
   }
 }
 
-// Loads a corp's structures into a structure <select>, fetched from ESI via our
+// Loads a system's structures into a structure <select>, from Corptools (ESI search as fallback) via our
 // own endpoint (cached server-side). Preserves any value already stored on the
 // moon so editing never silently clears it.
 const SYSTEM_STRUCT_API_URL = "{% url 'miningtax:api_structures_for_system' %}";
@@ -1231,9 +1231,9 @@ async function loadSystemStructuresInto(systemSelect, structSelect, preselect) {
       render(names, null);
     } else {
       const hints = {
-        no_search_token: '{% trans "— No structure-search token, showing observed names —" %}',
-        search_failed:   '{% trans "— Structure search failed, showing observed names —" %}',
-        none_found:      '{% trans "— No structures you can dock at here, showing observed names —" %}'
+        no_search_token: '{% trans "— Nothing known locally and no structure-search token, showing observed names —" %}',
+        search_failed:   '{% trans "— Nothing known locally and structure search failed, showing observed names —" %}',
+        none_found:      '{% trans "— No known structures in this system, showing observed names —" %}'
       };
       render(observed, hints[data.reason] || null);
     }

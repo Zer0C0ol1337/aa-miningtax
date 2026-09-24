@@ -632,9 +632,28 @@ def settings_view(request):
     # Known structure names already seen in the ledger, for the Moon Rental
     # "structure name" field's autocomplete — officers pick from what's
     # actually been mined instead of typing it by hand.
-    known_structures = list(
-        MiningLedgerEntry.objects.exclude(solar_system_name='')
-        .values_list('solar_system_name', flat=True).distinct().order_by('solar_system_name')
+    # Structure names offered by the structure pickers (moon rentals, alliance
+    # moons). Corptools first — every structure of the corps it audits, so a
+    # drill nobody has mined at yet can still be picked — then names already
+    # in the mining ledger. Ledger rows are limited to structure IDs: belt and
+    # anomaly mining store the plain system name there, which is not a
+    # structure and could never match a rental. Unresolved placeholders
+    # ("Structure (id)") are left out for the same reason.
+    known = set()
+    try:
+        from corptools.models.structures import Structure
+        known.update(Structure.objects.exclude(name='').values_list('name', flat=True))
+    except ImportError:
+        pass
+    known.update(
+        MiningLedgerEntry.objects
+        .filter(solar_system_id__gt=STRUCTURE_ID_THRESHOLD)
+        .exclude(solar_system_name='')
+        .values_list('solar_system_name', flat=True).distinct()
+    )
+    known_structures = sorted(
+        n for n in known
+        if n and not n.startswith(('Structure (', 'Mond-Struktur ('))
     )
 
     tax_forms = [(tr, TaxRateForm(instance=tr, prefix=f'tax_{tr.pk}')) for tr in tax_rates]

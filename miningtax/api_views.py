@@ -3,6 +3,11 @@ Small JSON endpoints used by the Settings UI to fill dependent dropdowns.
 
 Kept in its own module so views.py stays focused on page rendering. Nothing
 here renders a template — these are called by JS from settings.html only.
+
+Local data first since 0.10.18: moons come from eve_sde (CCP's static data
+export, loaded for Corptools), structures from Corptools' own structure and
+location tables plus names already stored in the mining ledger. ESI is only
+asked when those have nothing.
 """
 import logging
 
@@ -12,13 +17,13 @@ from django.http import JsonResponse
 from esi.exceptions import HTTPNotModified
 from esi.models import Token
 
-from .services import _get_esi_client
+from .services import STRUCTURE_ID_THRESHOLD, _get_esi_client
 
 logger = logging.getLogger(__name__)
 
-# Moons never move, so their names can be cached aggressively. This turns the
-# (potentially slow) first lookup of a system into a one-off cost per system.
-MOON_CACHE_TIMEOUT = 60 * 60 * 24 * 30  # 30 days
+# settings_view's stale-moon warning reads the structure-list cache key to
+# learn which structures a system has, so it is filled on every lookup.
+STRUCTURES_CACHE_TIMEOUT = 60 * 60 * 6  # 6 hours
 
 
 def _resolve_moon_names(esi, moon_ids):
@@ -65,10 +70,11 @@ def _resolve_moon_names(esi, moon_ids):
     return names
 
 
-def get_moons_for_system(system_id):
+def _moons_from_esi(system_id):
     """
-    All moons of a solar system as [{'id': ..., 'name': ...}], sorted by name.
-    Cached, since this walks every planet of the system.
+    All moons of a system from ESI — the fallback when eve_sde isn't installed
+    or doesn't know the system. Cached for 30 days, since this walks every
+    planet of the system and moons never move.
     """
     cache_key = f'miningtax:moons:{system_id}'
     cached = cache.get(cache_key)
@@ -83,17 +89,12 @@ def get_moons_for_system(system_id):
         ).results(force_refresh=force)
 
     try:
-        systems = _fetch()
-    except HTTPNotModified:
-        # 304 means ESI has this system cached against a stored ETag but our own
-        # result cache above already missed — so the data isn't in hand. Discard
-        # the ETag once and refetch. Systems never change, so this happens at
-        # most once per system, then our 30-day cache covers it.
         try:
+            systems = _fetch()
+        except HTTPNotModified:
+            # Our own cache missed, so the data isn't in hand — discard the
+            # ETag once and refetch. Systems never change.
             systems = _fetch(force=True)
-        except Exception as e:
-            logger.warning(f'Could not load system {system_id} from ESI after refetch: {e}')
-            return []
     except Exception as e:
         logger.warning(f'Could not load system {system_id} from ESI: {e}')
         return []
@@ -105,18 +106,46 @@ def get_moons_for_system(system_id):
     for planet in (getattr(systems[0], 'planets', None) or []):
         moon_ids.extend(getattr(planet, 'moons', None) or [])
 
-    if not moon_ids:
-        cache.set(cache_key, [], MOON_CACHE_TIMEOUT)
-        return []
-
-    names = _resolve_moon_names(esi, moon_ids)
+    names = _resolve_moon_names(esi, moon_ids) if moon_ids else {}
     moons = sorted(
         ({'id': mid, 'name': names.get(mid, f'Moon {mid}')} for mid in moon_ids),
         key=lambda m: m['name']
     )
-
-    cache.set(cache_key, moons, MOON_CACHE_TIMEOUT)
+    cache.set(cache_key, moons, 60 * 60 * 24 * 30)
     return moons
+
+
+def get_moons_for_system(system_id):
+    """
+    All moons of a solar system as [{'id': ..., 'name': ...}], sorted by name.
+    From eve_sde first — a single indexed query, since the SDE holds every
+    moon — then eveuniverse, and from ESI only when neither has the system.
+    """
+    try:
+        from eve_sde.models import Moon
+        moons = [
+            {'id': moon_id, 'name': name or f'Moon {moon_id}'}
+            for moon_id, name in Moon.objects.filter(solar_system_id=system_id)
+            .order_by('name').values_list('id', 'name')
+        ]
+        if moons:
+            return moons
+    except ImportError:
+        pass
+
+    try:
+        from eveuniverse.models import EveMoon
+        moons = [
+            {'id': moon_id, 'name': name or f'Moon {moon_id}'}
+            for moon_id, name in EveMoon.objects.filter(eve_planet__eve_solar_system_id=system_id)
+            .order_by('name').values_list('id', 'name')
+        ]
+        if moons:
+            return moons
+    except ImportError:
+        pass
+
+    return _moons_from_esi(system_id)
 
 
 def api_moons_for_system(request):
@@ -139,161 +168,8 @@ def api_moons_for_system(request):
     return JsonResponse({'moons': get_moons_for_system(int(system_id))})
 
 
-# Scope for reading a corporation's mining observers — every observer_id is a
-# structure ID, which is exactly what the structure picker needs, and it's the
-# same scope the corp observer sync already relies on, so no new authorization
-# is required. ESI still gates this behind an in-game role (Accountant or
-# Director) on top of the scope, so a token from a role-less member returns 403;
-# that case is reported to the UI rather than silently yielding nothing.
-CORP_MINING_SCOPE = 'esi-industry.read_corporation_mining.v1'
-STRUCTURES_CACHE_TIMEOUT = 60 * 60 * 6  # 6 hours — structures change rarely
-
-
-def _corp_mining_tokens(corporation_id):
-    """
-    Every valid corp-mining token belonging to a character in the given corp.
-
-    Returns a list rather than a single token on purpose: the scope alone is not
-    enough, ESI additionally requires an in-game role, and nothing in Auth
-    records who holds one. Picking just the first token would succeed or fail
-    depending on which member happened to authorize first, so callers try them
-    in turn until ESI accepts one.
-    """
-    from allianceauth.eveonline.models import EveCharacter
-
-    char_ids = EveCharacter.objects.filter(
-        corporation_id=corporation_id
-    ).values_list('character_id', flat=True)
-    if not char_ids:
-        return []
-
-    return list(
-        Token.objects
-        .filter(character_id__in=list(char_ids))
-        .require_scopes(CORP_MINING_SCOPE)
-        .require_valid()
-    )
-
-
-def get_structures_for_corp(corporation_id):
-    """
-    Names of the corporation's mining structures, sorted, cached. Sourced from
-    the mining-observer list (every observer_id is a structure ID), so it
-    covers all moon drills the corp owns — not just ones mined recently, and
-    without needing director access. Returns [] on any failure so the caller
-    can fall back to ledger-observed names.
-    """
-    cache_key = f'miningtax:corp_structures:{corporation_id}'
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached, None
-
-    tokens = _corp_mining_tokens(corporation_id)
-    if not tokens:
-        # Distinguish "nobody authorized the scope" from "ESI gave nothing" —
-        # otherwise an empty dropdown has no discernible cause without shell
-        # access on the server.
-        logger.info(
-            f'No valid {CORP_MINING_SCOPE} token for corp {corporation_id}; '
-            'a member of that corp must authorize the corp mining scope'
-        )
-        return [], 'no_token'
-
-    esi = _get_esi_client()
-
-    def _fetch(token, force=False):
-        return esi.client.Industry.GetCorporationCorporationIdMiningObservers(
-            corporation_id=corporation_id, token=token
-        ).results(force_refresh=force)
-
-    # ESI gates corp mining data behind an in-game role (Accountant or Director)
-    # on top of the scope, and Auth has no record of who holds one — so each
-    # token is tried until one is accepted. A 403 only rules out that character,
-    # not the corp.
-    observers = None
-    last_error = None
-    for token in tokens:
-        try:
-            try:
-                observers = _fetch(token)
-            except HTTPNotModified:
-                observers = _fetch(token, force=True)
-            break
-        except Exception as e:
-            last_error = e
-            if getattr(e, 'status_code', None) == 403:
-                logger.debug(
-                    f'Corp {corporation_id}: character {token.character_id} lacks the '
-                    f'in-game role for corp mining data, trying next token'
-                )
-                continue
-            logger.warning(f'Could not load mining observers for corp {corporation_id}: {e}')
-            return [], 'esi_error'
-
-    if observers is None:
-        if getattr(last_error, 'status_code', None) == 403:
-            logger.info(
-                f'Corp {corporation_id}: none of the {len(tokens)} corp-mining token(s) '
-                f'belong to a character with the required in-game role'
-            )
-            return [], 'no_role'
-        logger.warning(f'Could not load mining observers for corp {corporation_id}: {last_error}')
-        return [], 'esi_error' 
-
-    # Each observer_id is a structure ID. Prefer a name already stored in the
-    # ledger (resolved during a previous sync), then fall back to a bulk
-    # universe/names lookup for any not yet seen.
-    from .models import MiningLedgerEntry
-
-    observer_ids = [
-        getattr(o, 'observer_id', None) for o in (observers or [])
-        if getattr(o, 'observer_id', None)
-    ]
-    if not observer_ids:
-        cache.set(cache_key, [], STRUCTURES_CACHE_TIMEOUT)
-        return [], 'no_observers' 
-
-    known = dict(
-        MiningLedgerEntry.objects
-        .filter(solar_system_id__in=observer_ids)
-        .exclude(solar_system_name='')
-        .values_list('solar_system_id', 'solar_system_name')
-    )
-    missing = [oid for oid in observer_ids if oid not in known]
-    resolved = _resolve_moon_names(esi, missing) if missing else {}
-
-    names = sorted({
-        known.get(oid) or resolved.get(oid, f'Structure {oid}')
-        for oid in observer_ids
-    })
-
-    cache.set(cache_key, names, STRUCTURES_CACHE_TIMEOUT)
-    return names, None
-
-
-def api_structures_for_corp(request):
-    """
-    GET /miningtax/api/structures/?corporation_id=98399796
-    Returns {"structures": ["P9F-ZG - Foo", ...]}
-
-    Officer-only, same gate as the Settings page that consumes it.
-    """
-    from .views import has_full_officer_access
-
-    if not request.user.is_authenticated or not has_full_officer_access(request.user):
-        return JsonResponse({'error': 'forbidden'}, status=403)
-
-    corp_id = request.GET.get('corporation_id')
-    if not corp_id or not corp_id.isdigit():
-        return JsonResponse({'structures': [], 'reason': None})
-
-    names, reason = get_structures_for_corp(int(corp_id))
-    return JsonResponse({'structures': names, 'reason': reason})
-
-
-# Scope for searching structures. Unlike the corp endpoints this needs no
-# in-game role — it returns what the searching character can dock at, which is
-# precisely the set someone with structure access sees in the client.
+# Scope for the ESI structure-search fallback. Needs no in-game role — it
+# returns what the searching character can dock at.
 SEARCH_SCOPE = 'esi-search.search_structures.v1'
 
 
@@ -322,23 +198,56 @@ def _search_token_for(user):
     )
 
 
-def get_structures_in_system(system_name, token):
+def _local_structure_names(system_name):
     """
-    Structure names in a solar system, as far as the token's character can see
-    them. Cached for six hours; structures are added rarely.
-
-    Works by searching for the system name, which EVE puts at the start of every
-    structure name by default. A structure renamed to drop it will not be found
-    — a limitation worth knowing, though renaming that way is unusual precisely
-    because it makes structures hard to identify in-game too.
+    Structure names in a system from local data: Corptools' structure list
+    (structures of every corp it audits), its location cache (anything it has
+    seen through assets or similar), and names already stored in the mining
+    ledger.
     """
-    cache_key = f'miningtax:sys_structures:{system_name.lower()}'
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached, None
+    from .models import MiningLedgerEntry
 
+    names = set()
+    try:
+        from corptools.models import EveLocation
+        from corptools.models.structures import Structure
+
+        names.update(
+            Structure.objects.filter(system_name__name__iexact=system_name)
+            .values_list('name', flat=True)
+        )
+        names.update(
+            EveLocation.objects.filter(
+                system__name__iexact=system_name,
+                location_id__gt=STRUCTURE_ID_THRESHOLD,
+            ).values_list('location_name', flat=True)
+        )
+    except ImportError:
+        pass
+
+    # EVE starts every structure name with its system by default, which is how
+    # ledger entries (stored under the structure name) are matched to a system.
+    names.update(
+        MiningLedgerEntry.objects.filter(
+            solar_system_id__gt=STRUCTURE_ID_THRESHOLD,
+            solar_system_name__istartswith=system_name,
+        ).values_list('solar_system_name', flat=True).distinct()
+    )
+    return {n for n in names if n}
+
+
+def _esi_structure_names(system_name, token):
+    """
+    Structure names found by an ESI structure search with the officer's own
+    token — the fallback when no local source knows a structure in the system.
+    Returns (names, reason); reason is None on success.
+
+    Works by searching for the system name, which EVE puts at the start of
+    every structure name by default, so only structures the officer can dock
+    at are found.
+    """
     if not token:
-        return [], 'no_search_token'
+        return set(), 'no_search_token'
 
     esi = _get_esi_client()
 
@@ -357,46 +266,50 @@ def get_structures_in_system(system_name, token):
             result = _search(force=True)
     except Exception as e:
         logger.warning(f'Structure search for "{system_name}" failed: {e}')
-        return [], 'search_failed'
+        return set(), 'search_failed'
 
-    structure_ids = []
+    names = set()
     for item in (result or []):
-        structure_ids.extend(getattr(item, 'structure', None) or [])
-
-    if not structure_ids:
-        cache.set(cache_key, [], STRUCTURES_CACHE_TIMEOUT)
-        return [], 'none_found'
-
-    # Names already in the ledger cost nothing; the rest are asked for once.
-    from .models import MiningLedgerEntry
-
-    known = dict(
-        MiningLedgerEntry.objects
-        .filter(solar_system_id__in=structure_ids)
-        .exclude(solar_system_name='')
-        .values_list('solar_system_id', 'solar_system_name')
-    )
-
-    names = []
-    for sid in structure_ids:
-        if sid in known:
-            names.append(known[sid])
-            continue
-        try:
-            res = esi.client.Universe.GetUniverseStructuresStructureId(
-                structure_id=sid, token=token
-            ).results()
-            if res:
-                names.append(res[0].name)
-        except Exception:
-            # No docking access to this one, so no name — skipping is right,
-            # since a structure the officer cannot identify is not a useful
-            # thing to offer them.
-            continue
-
-    names = sorted(set(names))
-    cache.set(cache_key, names, STRUCTURES_CACHE_TIMEOUT)
+        for sid in (getattr(item, 'structure', None) or []):
+            try:
+                res = esi.client.Universe.GetUniverseStructuresStructureId(
+                    structure_id=sid, token=token
+                ).results()
+                if res:
+                    names.add(res[0].name)
+            except Exception:
+                # No docking access to this one, so no name — skipping is
+                # right, an unidentifiable structure is no use in a dropdown.
+                continue
     return names, None
+
+
+def get_structures_in_system(system_name, user=None):
+    """
+    Structure names in a solar system, sorted. Local data first; the ESI
+    structure search with the requesting officer's token only when no local
+    source knows any structure there. Returns (names, reason) — reason is
+    None on success, otherwise one of 'none_found', 'no_search_token',
+    'search_failed', which the Settings page turns into a hint.
+
+    The result also fills the cache key settings_view's stale-moon warning
+    reads to learn which structures a system has.
+    """
+    names = _local_structure_names(system_name)
+    reason = None
+
+    if not names:
+        token = _search_token_for(user) if user is not None else None
+        names, reason = _esi_structure_names(system_name, token)
+
+    names = sorted(names)
+    if names:
+        reason = None
+    elif reason is None:
+        reason = 'none_found'
+
+    cache.set(f'miningtax:sys_structures:{system_name.lower()}', names, STRUCTURES_CACHE_TIMEOUT)
+    return names, reason
 
 
 def api_structures_for_system(request):
@@ -404,9 +317,7 @@ def api_structures_for_system(request):
     GET /miningtax/api/system-structures/?system=P9F-ZG
     Returns {"structures": [...], "reason": null}
 
-    Uses the officer's own structure access, so it needs no corporation role —
-    the corp endpoints do, which is why they come back empty for a regular
-    member however much they can see in the client.
+    Officer-only, same gate as the Settings page that consumes it.
     """
     from .views import has_full_officer_access
 
@@ -415,9 +326,7 @@ def api_structures_for_system(request):
 
     system_name = (request.GET.get('system') or '').strip()
     if len(system_name) < 3:
-        # ESI rejects shorter searches outright.
         return JsonResponse({'structures': [], 'reason': None})
 
-    token = _search_token_for(request.user)
-    names, reason = get_structures_in_system(system_name, token)
+    names, reason = get_structures_in_system(system_name, user=request.user)
     return JsonResponse({'structures': names, 'reason': reason})

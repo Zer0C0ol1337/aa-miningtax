@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.17**
+**Version 0.10.18**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -20,8 +20,8 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 - **Per-pilot detail view** — every ledger entry of a player for a month, split by character and by ore category. Officers reach it from the billing member list, members from their own dashboard for their own characters. Characters with no mining are listed too, which is how an alt that never synced becomes visible
 - **PDF invoices** — per-corp invoice or all corps as a ZIP
 - **Corp Observer sync** — a director/CEO token pulls mining data for all moons/structures of a corp, covering members who never log in to Alliance Auth themselves
-- **Corptools integration** — reads mining data directly from Corptools' DB when available (zero extra ESI calls), falls back to its own ESI sync otherwise
-- **Automatic payment verification** — checks a configured treasury corp's wallet journal for incoming tax payments (reason keyword + amount + sender corp) and marks invoices as paid automatically; the required payment reason is shown with a one-click copy button
+- **Local data first** — mining ledgers, wallet journals, corp history, structures and sovereignty come from Corptools; ore types, systems and moons from eve_sde (shipped with Corptools 3.4) or eveuniverse; ESI is asked only for what none of them has (see [Data from Other Apps](#data-from-other-apps))
+- **Automatic payment verification** — checks a configured treasury corp's wallet journal for incoming tax payments (exact per-corp payment code + amount + sender corp) and marks invoices as paid automatically; the required payment reason is shown with a one-click copy button
 - **Manual override** — mark/unmark an invoice as paid at any time
 - **Corp-scoped billing access** — the `corp_billing` permission gives read-only billing for the holder's own corporation only (based on their main character's corporation); no automatic access is granted based on in-game CEO status. Full Settings and alliance-wide actions still require the `mining_officer` permission
 - **Background sync** — manual sync and payment checks run as Celery tasks, avoiding request timeouts on large datasets
@@ -38,10 +38,10 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 | `allianceauth` | Yes, 5.0 or later | Core framework |
 | `django-esi` | Yes | ESI access (mining sync, market prices, wallet journal) |
 | `reportlab` | Yes | PDF export |
-| `django-eveuniverse` | Recommended | Reprocessing recipes for refined-value pricing, and ore names without an ESI round trip. **Ore categories no longer depend on it** — those are imported straight from ESI since 0.10.3. Without it, refined-value pricing is unavailable and ore is valued at the raw ESI price. Load asteroid types with `eveuniverse_load_types miningtax --category_id 25` |
-| `allianceauth-corptools` | Recommended | Mining data from DB instead of ESI — significantly fewer API calls; required for the automatic payment check (corp wallet scope) |
+| `allianceauth-corptools` | Recommended (3.4+) | Mining ledgers, wallet journals, corp history, structures and sovereignty hubs from its database instead of ESI; 3.4 also brings eve_sde, which supplies ore types, systems and moons locally |
+| `django-eveuniverse` | Recommended | Reprocessing recipes for refined-value pricing, market prices when its own price task runs, and a second local source for ore and system names. Without it, refined-value pricing is unavailable and ore is valued at the raw price. Load asteroid types with `eveuniverse_load_types miningtax --category_id 25` |
 
-Without Corptools the plugin falls back to its own ESI sync for mining data. The **automatic payment verification** feature specifically requires a director/accountant character of the treasury corp logged in via Corptools' Corporation Audit flow with the `esi-wallet.read_corporation_wallets.v1` scope — Character Audit alone does not grant this scope.
+Without either app every lookup falls back to ESI and the plugin works the same, only with more API calls. The **automatic payment verification** needs either Corptools auditing the treasury corp's wallet, or any character of the treasury corp registered in Alliance Auth with the `esi-wallet.read_corporation_wallets.v1` scope.
 
 ---
 
@@ -52,15 +52,20 @@ present, it is preferred:
 
 | App | Used for | Why |
 |---|---|---|
-| `allianceauth-corptools` | Mining ledgers | Reads them from its database instead of ESI, cutting the API calls this plugin makes by far the largest margin available |
-| `django-eveuniverse` | Ore names, reprocessing recipes | Local, authoritative, and the only source for the recipes that refined-value pricing needs |
+| `allianceauth-corptools` | Mining ledgers, treasury wallet journals, character corp history, structure names, sovereignty hubs | Everything it already audits costs no ESI call here |
+| `eve_sde` (with Corptools 3.4) | Ore types and groups, ore import, system names, moons | CCP's static data export — complete, local, no ESI at all |
+| `django-eveuniverse` | Reprocessing recipes, market prices (if at most 24 h old), second source for ore and system names | The only source for the recipes refined-value pricing needs |
+
+The order is always Corptools/eve_sde → eveuniverse → ESI. ESI remains for what no
+installed app holds — corp mining observers, a corporation's alliance history —
+and as the fallback for anything the apps above don't know.
 
 **`aa-structures` is not integrated.** It could supply structure names without
 an ESI call, and on paper that fits. It is not used because neither this
 plugin's authors nor its only production install run it, so the integration
 could not be exercised — and the first person to install `aa-structures` would
 have discovered that on their own moon configuration. Structure names come from
-mining data and from EVE's structure search instead, both of which are tested
+Corptools, mining data and EVE's structure search instead, both of which are tested
 daily here. If you run `aa-structures` and want it used, say so on the issue
 tracker; it is a small change once someone can verify it works.
 
@@ -430,9 +435,9 @@ This runs: personal ledger sync, corp observer sync, market prices, billing reco
 ## Development
 
 Tested with:
-- Alliance Auth 5.2.0
+- Alliance Auth 5.3.1
 - Django 5.2
 - django-esi 9.x
-- django-eveuniverse (optional, for refined-value pricing)
-- allianceauth-corptools 3.x
+- django-eveuniverse 2.x (optional, for refined-value pricing)
+- allianceauth-corptools 3.4 with django-eveonline-sde 0.2
 - reportlab 4.x

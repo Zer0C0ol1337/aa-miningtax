@@ -151,7 +151,7 @@ def sync_sov_systems_task(requested_by=None):
     """Refreshes the known systems list. Backs the Systems tab button."""
     from .services import sync_sov_systems
 
-    count = sync_sov_systems(force_recovery=True)
+    count = sync_sov_systems()
     result = f'{count} system(s) tracked'
     logger.info(f'Sovereignty sync by {requested_by or "unknown"}: {result}')
     return result
@@ -217,41 +217,31 @@ def register_corporation_task(corporation_id, requested_by=None):
 @shared_task
 def register_alliance_corps_task(alliance_id, requested_by=None):
     """
-    Registers every corporation of an alliance.
+    Registers every corporation of an alliance through Alliance Auth's own
+    EveAllianceInfo.populate_alliance(), rather than this plugin asking ESI
+    for the corp list itself.
 
-    This is why the registration actions became tasks at all: one ESI call
-    fetches the corp list, then Alliance Auth makes another for each corp it
-    does not know. An alliance of fifty corps is fifty-one requests, which is
-    well past what a web request should be doing.
+    populate_alliance() still reaches ESI internally — nothing in the stack
+    holds an alliance's member list — but it is Alliance Auth's standard path,
+    and it also sets every member corp's alliance assignment, which the
+    taxable-scope check relies on. Runs as a task because an alliance of fifty
+    corps is still fifty-one requests on Alliance Auth's side.
     """
-    from allianceauth.eveonline.models import EveCorporationInfo
-    from .services import _get_esi_client
+    from allianceauth.eveonline.models import EveAllianceInfo, EveCorporationInfo
 
+    before = EveCorporationInfo.objects.count()
     try:
-        esi = _get_esi_client()
-        corp_ids = esi.client.Alliance.GetAlliancesAllianceIdCorporations(
-            alliance_id=alliance_id
-        ).results()
+        alliance = EveAllianceInfo.objects.filter(alliance_id=alliance_id).first()
+        if alliance is None:
+            alliance = EveAllianceInfo.objects.create_alliance(alliance_id)
+        alliance.populate_alliance()
     except Exception as e:
-        logger.warning(f'Could not fetch corp list for alliance {alliance_id}: {e}')
+        logger.warning(f'Could not register corps of alliance {alliance_id}: {e}')
         return f'failed: {e}'
 
-    registered = 0
-    already_present = 0
-    failed = 0
-
-    for corp_id in (corp_ids or []):
-        if EveCorporationInfo.objects.filter(corporation_id=corp_id).exists():
-            already_present += 1
-            continue
-        try:
-            EveCorporationInfo.objects.create_corporation(corporation_id=corp_id)
-            registered += 1
-        except Exception as e:
-            logger.warning(f'Could not register corp {corp_id} of alliance {alliance_id}: {e}')
-            failed += 1
-
-    result = f'{registered} new, {already_present} already present, {failed} failed'
+    registered = EveCorporationInfo.objects.count() - before
+    member_count = EveCorporationInfo.objects.filter(alliance=alliance).count()
+    result = f'{registered} new, {member_count} member corp(s) now assigned to {alliance.alliance_name}'
     logger.info(f'Alliance {alliance_id} corps registered by {requested_by or "unknown"}: {result}')
     return result
 
