@@ -54,10 +54,6 @@
             <span class="badge bg-secondary" title="Mining Tax Version">
                 <i class="fas fa-code-branch me-1"></i>v{{ app_version }}
             </span>
-            <a href="{% url 'miningtax:export_my_ledger' %}?year={{ year }}&month={{ month_num }}"
-               class="btn btn-sm btn-outline-secondary">
-                📄 {% trans "Export CSV" %}
-            </a>
             {% if is_full_officer %}
             <form method="post" action="{% url 'miningtax:sync_now' %}">
                 {% csrf_token %}

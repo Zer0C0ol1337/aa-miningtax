@@ -468,7 +468,10 @@ def alliance_overview(request):
     return render(request, 'miningtax/alliance_overview.html', context)
 
 
-@check_access(has_officer_access)
+# Changing payment state is for mining officers only. corp_billing grants a
+# corp read access to its own invoice — letting it also mark that invoice
+# paid meant a corp could clear its own bill without transferring anything.
+@check_access(has_full_officer_access)
 def mark_paid(request, corp_id):
     if request.method != 'POST':
         return redirect('miningtax:alliance_overview')
@@ -507,7 +510,8 @@ def mark_paid(request, corp_id):
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
 
-@check_access(has_officer_access)
+# Same reasoning as mark_paid: resetting a payment is an officer decision.
+@check_access(has_full_officer_access)
 def mark_unpaid(request, corp_id):
     if request.method != 'POST':
         return redirect('miningtax:alliance_overview')

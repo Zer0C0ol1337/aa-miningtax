@@ -7,7 +7,7 @@ the same AllianceBillingRecord snapshot the Alliance Billing page and the PDF
 export both use (since 0.10.10/0.10.12), so none of the three can disagree about
 a corp's monthly total.
 
-export_my_ledger() and export_pilot_ledger() are unaffected by that — they list
+export_pilot_ledger() is unaffected by that — it lists
 individual MiningLedgerEntry rows with tax resolved per entry, which has no
 cached counterpart to drift from.
 
@@ -80,26 +80,6 @@ def _ledger_rows(entries):
             _fmt(info['tax_amount']),
             'yes' if info['excluded'] else 'no',
         ]
-
-
-@check_access(has_basic_access)
-def export_my_ledger(request):
-    """The requesting user's own mining for a month, across all their characters."""
-    today = date.today()
-    year = int(request.GET.get('year', today.year))
-    month = int(request.GET.get('month', today.month))
-
-    character_ids = request.user.character_ownerships.all().values_list(
-        'character_id', flat=True
-    )
-    entries = MiningLedgerEntry.objects.filter(
-        character__in=EveCharacter.objects.filter(pk__in=character_ids),
-        date__year=year,
-        date__month=month,
-    ).select_related('character').order_by('date', 'character__character_name')
-
-    filename = f'my_mining_{year}_{month:02d}.csv'
-    return _csv_response(filename, _ledger_rows(entries))
 
 
 @check_access(has_basic_access)

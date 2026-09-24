@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.18**
+**Version 0.10.19**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -183,7 +183,7 @@ point at them, so renaming would quietly void every existing assignment.
 
 Superusers (`is_staff`/`is_superuser`) always have full access regardless of assigned permissions.
 
-**`corp_billing` is scoped to one corporation** — the one the holder's main character belongs to. That applies everywhere the same way: the billing page and its summary figures, marking paid/unpaid, the PDF invoice, the all-corps ZIP (which contains only their corp) and the CSV export. It does **not** grant Settings or any alliance-wide action — manual sync, Check Payments Now, editing tax rates, moons or treasury all need `mining_officer`, since they spend shared ESI rate limit or change data on everyone's behalf.
+**`corp_billing` is scoped to one corporation** — the one the holder's main character belongs to. That applies everywhere the same way: the billing page and its summary figures, the PDF invoice, the all-corps ZIP (which contains only their corp) and the CSV export — all read-only. It does **not** grant marking an invoice paid or unpaid, Settings, or any alliance-wide action — those, as well as manual sync, Check Payments Now and editing tax rates, moons or treasury, all need `mining_officer`. A corp that could mark its own invoice paid could clear its bill without transferring anything.
 
 The plugin deliberately makes no assumptions about who deserves which access. Earlier versions detected corp CEOs from `EveCorporationInfo.ceo_id` and granted them corp access automatically; that meant the plugin decided rather than the Auth admin, the grant appeared nowhere in the permission UI and could not be revoked, and it came along with any alt who happened to be CEO of an unrelated one-man corp. Assign `corp_billing` to whoever should have it — CEOs, directors, a mining coordinator — through the usual groups.
 

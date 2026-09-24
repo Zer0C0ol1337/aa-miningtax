@@ -134,6 +134,12 @@
                    class="btn btn-sm btn-outline-primary">
                     📄 PDF
                 </a>
+                {% comment %}
+                  Only mining officers may change payment state; the server
+                  refuses it for corp_billing users regardless, this just
+                  avoids showing them a button that would answer with 403.
+                {% endcomment %}
+                {% if is_full_officer %}
                 {% if not corp.paid %}
                 <form method="post" action="{% url 'miningtax:mark_paid' corp_id %}">
                     {% csrf_token %}
@@ -154,6 +160,7 @@
                         ↩️ {% trans "Reset to Unpaid" %}
                     </button>
                 </form>
+                {% endif %}
                 {% endif %}
             </div>
         </div>
@@ -177,7 +184,8 @@
                 {% else %}
                 <div class="alert alert-light text-muted py-2 small">
                     <i class="fas fa-clock"></i>
-                    {% trans "The payment code will be available from the 2nd of next month." %}
+                    {# Configured in Settings (day, hour UTC, and this text itself) rather than fixed here. #}
+                    {{ payment_hint }}
                 </div>
                 {% endif %}
                 {% endif %}

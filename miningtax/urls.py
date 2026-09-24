@@ -42,7 +42,6 @@ urlpatterns = [
     path('settings/exemption/<int:pk>/delete/', views.settings_delete_exemption, name='settings_delete_exemption'),
     path('settings/exemption/<int:pk>/toggle/', views.settings_toggle_exemption, name='settings_toggle_exemption'),
 
-    path('csv/my-ledger/', csv_views.export_my_ledger, name='export_my_ledger'),
     path('csv/pilot/<int:character_id>/', csv_views.export_pilot_ledger, name='export_pilot_ledger'),
     path('csv/alliance/', csv_views.export_alliance_billing, name='export_alliance_billing'),
 

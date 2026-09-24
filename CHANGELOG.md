@@ -1,6 +1,19 @@
 # Changelog
 
 
+## [0.10.19] - 2026-09-24
+
+### Security
+- **A corp-scoped billing user could mark their own corporation's invoice as paid — or reset it to unpaid — without any payment.** `mark_paid` and `mark_unpaid` accepted the `corp_billing` permission and only checked that the invoice belonged to the user's own corp, so a corp could clear its own bill without transferring any ISK. Both now require `mining_officer` (or superuser), enforced on the server; the buttons are also hidden from everyone else. The README had described this as allowed in one place and as read-only in another — it now consistently says `corp_billing` is read-only
+- **After upgrading, review manually-paid invoices.** An invoice showing "Paid" (not "Auto-Verified") was marked by hand; the log records who did it (`MANUALLY marked as paid`). Any entry by someone without `mining_officer` should be reset and checked against the treasury wallet
+
+### Fixed
+- **The payment-code hint text configured in Settings had stopped showing on Alliance Billing.** A later rebuild of the template from an older copy put the fixed sentence "available from the 2nd of next month" back in place of the configured text, so editing it in Settings had no visible effect. Restored
+
+### Removed
+- **The CSV export on the personal mining dashboard**, together with its view and route (`csv/my-ledger/`), which nothing else used. The CSV exports on Alliance Billing and on the pilot detail page are unchanged
+
+
 ## [0.10.18] - 2026-09-24
 
 ### Changed
