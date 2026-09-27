@@ -342,7 +342,10 @@ def alliance_overview(request):
         if is_corp_outside_taxable_scope(corp_id, corp_name):
             continue
 
-        rental_fee = rental_totals.get(corp_id, Decimal('0'))
+        # From the snapshot, like total_due next to it. Reading today's rentals
+        # here instead made the Rental line and the Due figure disagree as soon
+        # as a rental changed, until the snapshot caught up.
+        rental_fee = record.moon_rental_total or Decimal('0')
         total_due = record.total_due
 
         # A corp with nothing due this month — no tax, no rental — adds noise

@@ -32,14 +32,18 @@ def _format_isk(value, suffix=False):
     return f"{text} ISK" if suffix else text
 
 
-def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=None):
+def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=None, rental_total=None):
     """
-    Generiert eine Corp-Abrechnung als PDF und gibt ein BytesIO-Objekt zurück.
+    Builds a corp invoice PDF and returns it as a BytesIO.
 
-    corp_data: dict aus calculate_alliance_billing()['corps'][corp_id]
+    corp_data: dict shaped like calculate_alliance_billing()['corps'][corp_id]
     corp_name: str
     month/year: int
-    moon_rentals: QuerySet von MoonRental für diese Corp (optional)
+    moon_rentals: the corp's MoonRental rows, used to list the individual moons
+    rental_total: the rental this month was billed with (from its snapshot).
+        When given it is the amount shown and added to the total; the moons are
+        only itemised if today's rentals still add up to it. None falls back to
+        summing moon_rentals, the behaviour before 0.10.21.
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -117,11 +121,15 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     # ── Summary ───────────────────────────────────────────────────────────────
     story.append(Paragraph(_("Summary"), style_section))
 
-    rental_total = Decimal('0')
-    if moon_rentals:
-        for r in moon_rentals:
-            if r.active:
-                rental_total += r.monthly_fee
+    active_rentals = [r for r in (moon_rentals or []) if r.active]
+    active_sum = sum((r.monthly_fee for r in active_rentals), Decimal('0'))
+    if rental_total is None:
+        rental_total = active_sum
+    # A rental added or removed after the month was billed would make an
+    # itemised list disagree with the billed amount, so the moons are listed
+    # only while they still add up to it — otherwise a single line shows the
+    # amount as billed.
+    itemise_rentals = bool(active_rentals) and active_sum == rental_total
 
     total_due = corp_data['total_tax'] + rental_total
 
@@ -237,18 +245,24 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     story.append(member_table)
 
     # ── Moon Rentals ──────────────────────────────────────────────────────────
-    if moon_rentals and rental_total > 0:
+    if rental_total > 0:
         story.append(Spacer(1, 4*mm))
         story.append(Paragraph(_("Moon Rentals"), style_section))
 
         rental_data = [[_("Moon"), _("Structure"), _("Monthly Fee")]]
-        for r in moon_rentals:
-            if r.active:
+        if itemise_rentals:
+            for r in active_rentals:
                 rental_data.append([
                     Paragraph(r.moon_name, style_cell),
                     Paragraph(r.structure_name or '—', style_cell),
                     _format_isk(r.monthly_fee),
                 ])
+        else:
+            rental_data.append([
+                Paragraph(_("Moon rental as billed for this month"), style_cell),
+                Paragraph('—', style_cell),
+                _format_isk(rental_total),
+            ])
 
         rental_table = Table(rental_data, colWidths=[55*mm, 65*mm, 50*mm])
         rental_table.setStyle(TableStyle([

@@ -120,6 +120,9 @@ def download_corp_pdf(request, corp_id):
         month=month,
         year=year,
         moon_rentals=moon_rentals,
+        # The amount the month was billed with, same as the billing page and
+        # the payment check use — not whatever rentals exist today.
+        rental_total=record.moon_rental_total or Decimal('0'),
     )
 
     filename = f"mining_invoice_{corp_name.replace(' ', '_')}_{year}_{month:02d}.pdf"
@@ -172,6 +175,7 @@ def download_all_corps_zip(request):
                 month=month,
                 year=year,
                 moon_rentals=moon_rentals,
+                rental_total=record.moon_rental_total or Decimal('0'),
             )
 
             filename = f"mining_invoice_{corp_name.replace(' ', '_')}_{year}_{month:02d}.pdf"

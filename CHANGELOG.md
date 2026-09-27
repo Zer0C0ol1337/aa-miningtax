@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.10.21] - 2026-09-27
+
+### Fixed
+- **Moon rental on PDF invoices and on the Rental line of Alliance Billing came from today's rentals, not from the month's snapshot.** The Due figure and the automatic payment check both use the snapshot, so removing a rental made them disagree: the PDF and the Rental line dropped the rental at once while Due still included it — and a corp paying the lower PDF amount would not have been recognised. It also meant every PDF, including long-billed months, changed whenever a rental was added or removed. The single PDF, the ZIP export and the Rental line now all read the rental the month was billed with. A rental change reaches a month when its snapshot is refreshed — daily for the running month, via Rebuild Snapshot for any other
+- The PDF still lists the individual moons while today's rentals add up to the billed amount; once they no longer do, it shows a single line "Moon rental as billed for this month" instead of a list that wouldn't match the total
+
+
 ## [0.10.20] - 2026-09-27
 
 ### Added
