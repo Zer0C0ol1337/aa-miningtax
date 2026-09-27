@@ -1,6 +1,16 @@
 # Changelog
 
 
+## [0.10.20] - 2026-09-27
+
+### Added
+- **Open-invoice badge on the Mining Tax sidebar entry**, using Alliance Auth's own menu badge. Holders of `corp_billing` see how many of their corporation's invoices are still unpaid; mining officers and superusers see the count for the whole alliance. An invoice counts from the moment its payment code is revealed (the day and hour set under Payment Code Timing) until it is marked paid or recognised automatically — the running month never counts, invoices with nothing due don't either, and corporations outside the taxable scope are left out, just as the billing page hides them
+- The count is held for five minutes because the menu is drawn on every page, but any change to an invoice — paid, reset, recognised, rebuilt — clears it immediately. A failure while counting shows no badge rather than breaking the menu
+- Who sees the menu entry is unchanged (`basic_access`); the badge only adds a number to it
+- **Optional start month for the badge**, under Settings → Payment Code Timing ("Open invoices count from"). Unpaid invoices from earlier months — from before billing was actually enforced — no longer count towards the badge; they stay in the database and on the billing pages exactly as they are. Empty keeps every month counting. Saving the setting updates the officers' count immediately
+- Migration `0025_paymentcodesettings_open_invoices_from` adds the two optional fields; existing installs keep counting every month until a start month is set
+
+
 ## [0.10.19] - 2026-09-24
 
 ### Security

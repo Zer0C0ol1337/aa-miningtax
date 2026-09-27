@@ -105,6 +105,21 @@
                 </small>
               </div>
             </div>
+            <div class="row g-3 mt-1">
+              <div class="col-md-3">
+                <label class="form-label">{% trans "Open invoices count from — Year" %}</label>
+                {{ payment_code_form.open_invoices_from_year }}
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">{% trans "Month" %}</label>
+                {{ payment_code_form.open_invoices_from_month }}
+              </div>
+              <div class="col-md-6 d-flex align-items-end">
+                <small class="text-muted">
+                  {% trans "Unpaid invoices before this month don't count towards the sidebar badge. They stay unchanged on the billing pages. Leave both empty to count every month." %}
+                </small>
+              </div>
+            </div>
             <div class="mt-3">
               <button type="submit" class="btn btn-sm btn-outline-success">
                 <i class="fas fa-save"></i> {% trans "Save" %}
@@ -114,6 +129,11 @@
           <div class="mt-3 text-muted small">
             <i class="fas fa-info-circle"></i>
             {% blocktrans with day=payment_code_config.reveal_day hour=payment_code_config.reveal_hour_utc %}Currently: revealed on day {{ day }} of the following month, {{ hour }}:00 UTC.{% endblocktrans %}
+            {% if payment_code_config.open_invoices_from_year and payment_code_config.open_invoices_from_month %}
+              {% blocktrans with m=payment_code_config.open_invoices_from_month y=payment_code_config.open_invoices_from_year %}Open invoices counted from {{ m }}/{{ y }}.{% endblocktrans %}
+            {% else %}
+              {% trans "Open invoices counted from every month." %}
+            {% endif %}
           </div>
         </div>
       </div>

@@ -1084,9 +1084,11 @@ def settings_save_payment_code(request):
         form = PaymentCodeSettingsForm(request.POST, instance=config)
         if form.is_valid():
             form.save()
+            start = form.instance.open_invoices_from()
             logger.info(
                 f'{request.user.username}: payment code settings saved '
-                f'(reveal day {form.instance.reveal_day}, {form.instance.reveal_hour_utc:02d}:00 UTC)'
+                f'(reveal day {form.instance.reveal_day}, {form.instance.reveal_hour_utc:02d}:00 UTC, '
+                f'open invoices counted from {f"{start[1]:02d}/{start[0]}" if start else "the beginning"})'
             )
             messages.success(request, '✅ Payment code settings saved.')
         else:

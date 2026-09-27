@@ -174,7 +174,8 @@ class JaniceConfigForm(forms.ModelForm):
 class PaymentCodeSettingsForm(forms.ModelForm):
     class Meta:
         model = PaymentCodeSettings
-        fields = ['reveal_day', 'reveal_hour_utc', 'hint_text']
+        fields = ['reveal_day', 'reveal_hour_utc', 'hint_text',
+                  'open_invoices_from_year', 'open_invoices_from_month']
         widgets = {
             'reveal_day': forms.NumberInput(attrs={
                 'class': 'form-control', 'min': '1', 'max': '28',
@@ -184,6 +185,12 @@ class PaymentCodeSettingsForm(forms.ModelForm):
             }),
             'hint_text': forms.Textarea(attrs={
                 'class': 'form-control', 'rows': 2,
+            }),
+            'open_invoices_from_year': forms.NumberInput(attrs={
+                'class': 'form-control', 'min': '2003', 'max': '2100',
+            }),
+            'open_invoices_from_month': forms.NumberInput(attrs={
+                'class': 'form-control', 'min': '1', 'max': '12',
             }),
         }
 
@@ -206,6 +213,23 @@ class PaymentCodeSettingsForm(forms.ModelForm):
         if not (0 <= hour <= 23):
             raise forms.ValidationError('Must be between 0 and 23.')
         return hour
+
+    def clean(self):
+        # The start month is only meaningful as a pair: a year without a month
+        # (or the reverse) would be silently ignored by open_invoices_from(),
+        # so it is rejected here rather than stored looking like it applies.
+        cleaned = super().clean()
+        year = cleaned.get('open_invoices_from_year')
+        month = cleaned.get('open_invoices_from_month')
+        if bool(year) != bool(month):
+            raise forms.ValidationError(
+                'Set both the year and the month to count open invoices from, or leave both empty.'
+            )
+        if month and not (1 <= month <= 12):
+            self.add_error('open_invoices_from_month', 'Must be between 1 and 12.')
+        if year and not (2003 <= year <= 2100):
+            self.add_error('open_invoices_from_year', 'Must be a year between 2003 and 2100.')
+        return cleaned
 
 
 # Exempts a single character or a whole corporation from mining tax.

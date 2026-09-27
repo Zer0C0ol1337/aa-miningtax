@@ -311,6 +311,20 @@ class PaymentCodeSettings(models.Model):
                    'placeholders — both are filled in with the values above, so the text stays correct if you '
                    'change the day or time later without having to edit this field again.'
     )
+    # From which month unpaid invoices count towards the sidebar badge. Months
+    # before it stay in the database and on the billing pages unchanged — this
+    # is for invoices from before billing was actually enforced, which would
+    # otherwise keep the badge lit for good. Empty means no limit.
+    open_invoices_from_year = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text='Year of the first month whose unpaid invoices count towards the open-invoice badge. '
+                  'Leave both fields empty to count every month.'
+    )
+    open_invoices_from_month = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text='Month (1-12) of the first month whose unpaid invoices count towards the open-invoice badge. '
+                  'Leave both fields empty to count every month.'
+    )
 
     class Meta:
         default_permissions = ()
@@ -324,6 +338,12 @@ class PaymentCodeSettings(models.Model):
     def get_solo(cls):
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+    def open_invoices_from(self):
+        """(year, month) from which unpaid invoices count as open, or None for no limit."""
+        if self.open_invoices_from_year and self.open_invoices_from_month:
+            return self.open_invoices_from_year, self.open_invoices_from_month
+        return None
 
     def rendered_hint(self):
         """

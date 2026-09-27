@@ -57,3 +57,36 @@ for _model in (
 ):
     post_save.connect(_invalidate_billing_caches, sender=_model, weak=False)
     post_delete.connect(_invalidate_billing_caches, sender=_model, weak=False)
+
+# ─── MENU BADGE ──────────────────────────────────────────────────────────────
+#
+# The open-invoice badge in the sidebar is cached for a few minutes because the
+# menu is drawn on every page. Any change to a billing record — marked paid,
+# reset, recognised automatically, rebuilt — clears it at once, so a corp that
+# has just paid doesn't keep seeing a reminder.
+
+from .models import AllianceBillingRecord, PaymentCodeSettings
+
+
+def _clear_menu_badge(sender, instance, **kwargs):
+    from .auth_hooks import clear_badge_cache
+    try:
+        corp_id = instance.corporation.corporation_id
+    except Exception:
+        corp_id = None
+    clear_badge_cache(corp_id)
+
+
+post_save.connect(_clear_menu_badge, sender=AllianceBillingRecord, weak=False)
+post_delete.connect(_clear_menu_badge, sender=AllianceBillingRecord, weak=False)
+
+
+# Payment Code Timing decides which months count at all (reveal time, start
+# month), so saving it clears the alliance-wide count straight away. A corp's
+# own count follows within the few minutes it is held for.
+def _clear_menu_badge_on_settings(sender, instance, **kwargs):
+    from .auth_hooks import clear_badge_cache
+    clear_badge_cache()
+
+
+post_save.connect(_clear_menu_badge_on_settings, sender=PaymentCodeSettings, weak=False)
