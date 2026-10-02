@@ -1,6 +1,25 @@
 # Changelog
 
 
+## [0.10.22] - 2026-10-02
+
+### Fixed
+- **Alliance Billing showed today's moon rentals in every month, including closed ones.** A corp with an active rental but no invoice for the viewed month was added on the fly — a corp renting since September appeared in August as owing rent it never owed there. The page shows stored invoices only; rental-only corps get a real invoice from the month's own calculation
+- **The nightly payment check only ever looked at the running month** — the one month whose payment code isn't out yet, so it can't have been paid. Payments for the months actually being paid were only found by pressing Check Payments Now on that month's page. It now checks every month whose code is out and that still has open invoices
+- **"Mark as Paid Manually" recalculated the entire alliance on every click.** The fix that made it read the month's existing invoice instead had been lost when `views.py` was rebuilt from an older copy, so each click ran the full live calculation again — slow enough on a large alliance to time out the request, which is what an Internal Server Error on that button can look like. It marks the invoice as paid straight from the snapshot again, without calculating anything
+- **Marking a closed month paid could silently change its amount.** The recalculation ran first and overwrote the invoice with today's rules before marking it paid, so a corp could be marked paid at a figure other than the one it had been shown. The amount on the invoice is now exactly the one that was displayed
+- Marking an invoice that is already paid now says so instead of overwriting its payment time
+
+### Changed
+- **A month becomes final the moment its payment code is revealed, and from then on nothing changes it.** The nightly sync now also recalculates the previous month until that moment — those runs are its last syncs — and Rebuild Snapshot is refused for a final month: the button is gone (a 🔒 Final badge shows instead) and the server rejects it too. A corp can only pay once it has the code, so the amount it transfers is always the amount on record and the payment check keeps recognising it
+- **A month's closing day is billed again.** The nightly sync used to recalculate only the month it ran in, so a month's last snapshot was taken at 02:00 on its final day: that day's mining, and anything ESI reported late, never reached the invoice
+- **A month is now calculated in exactly two places: the Rebuild Snapshot button, and the nightly sync.** Opening a month on the billing page, Mark as Paid, the PDF and ZIP downloads and the CSV export used to calculate the whole month on the spot whenever it had no invoices yet — inside the request, for minutes on a large alliance. They now only read the stored invoices; for a month without any, the billing page says so and points officers to Rebuild Snapshot, and the downloads answer with the same hint instead of a file
+- The unused `mark_corp_paid()` helper, which recalculated before marking, is removed
+- **The totals at the top of Alliance Billing cover the whole month, paid or not, and a new "Still Outstanding" card shows what is left to collect.** Mining, tax and rental used to count unpaid corps only, so marking any corp paid made all three drop — it looked as if the month itself had changed. Now they stay fixed, and only Still Outstanding shrinks as corps pay
+- **Check Payments Now checks every month whose payment code is out and that still has open invoices**, not just the month on screen. The page opens on the running month, which nobody can have paid yet, so pressing the button there checked exactly the one month a payment couldn't be for
+- README: tested with Alliance Auth 5.4.0
+
+
 ## [0.10.21] - 2026-09-27
 
 ### Fixed

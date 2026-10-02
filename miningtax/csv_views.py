@@ -151,12 +151,9 @@ def export_alliance_billing(request):
         year=year, month=month
     ).select_related('corporation')
 
+    # Never calculates — only Rebuild Snapshot and the nightly sync do.
     if not records.exists():
-        from .billing import save_billing_records_for_month
-        save_billing_records_for_month(year, month)
-        records = AllianceBillingRecord.objects.filter(
-            year=year, month=month
-        ).select_related('corporation')
+        return HttpResponse('No invoices exist for this month yet — a mining officer can create them with Rebuild Snapshot.', status=404)
 
     if restricted:
         records = records.filter(corporation__corporation_id=restricted)

@@ -65,25 +65,17 @@ def _record_to_corp_data(record):
     }
 
 
-def _get_or_build_record(corp_obj, year, month):
+def _get_record(corp_obj, year, month):
     """
-    Fetches the billing record for a corp/month, building the whole month's
-    snapshot first if none exists yet — same fallback alliance_overview() uses,
-    so a PDF requested before the first daily sync of a fresh month still works
-    rather than returning nothing.
+    The stored invoice for a corp and month, or None if the month has none.
+
+    Never calculates: a month is calculated only by Rebuild Snapshot and by the
+    nightly sync for the running month. This used to build the whole month
+    whenever a PDF was requested for a month without invoices.
     """
-    record = AllianceBillingRecord.objects.filter(
+    return AllianceBillingRecord.objects.filter(
         corporation=corp_obj, year=year, month=month
     ).first()
-
-    if record is None:
-        from .billing import save_billing_records_for_month
-        save_billing_records_for_month(year, month)
-        record = AllianceBillingRecord.objects.filter(
-            corporation=corp_obj, year=year, month=month
-        ).first()
-
-    return record
 
 
 # Generiert die PDF-Abrechnung für eine einzelne Corp und liefert sie als Download.
@@ -104,9 +96,9 @@ def download_corp_pdf(request, corp_id):
     except EveCorporationInfo.DoesNotExist:
         return HttpResponse('Corporation not found.', status=404)
 
-    record = _get_or_build_record(corp_obj, year, month)
+    record = _get_record(corp_obj, year, month)
     if record is None:
-        return HttpResponse('Keine Daten für diese Corp in diesem Monat.', status=404)
+        return HttpResponse('No invoice exists for this corp and month yet — a mining officer can create it with Rebuild Snapshot.', status=404)
 
     corp_data = _record_to_corp_data(record)
     corp_name = corp_data['corp_name']
@@ -142,12 +134,9 @@ def download_all_corps_zip(request):
         year=year, month=month
     ).select_related('corporation')
 
+    # Never calculates — only Rebuild Snapshot and the nightly sync do.
     if not records.exists():
-        from .billing import save_billing_records_for_month
-        save_billing_records_for_month(year, month)
-        records = AllianceBillingRecord.objects.filter(
-            year=year, month=month
-        ).select_related('corporation')
+        return HttpResponse('No invoices exist for this month yet — a mining officer can create them with Rebuild Snapshot.', status=404)
 
     # Same reasoning as the single invoice: a CEO gets a ZIP of their own corp
     # rather than of every corp in the alliance.

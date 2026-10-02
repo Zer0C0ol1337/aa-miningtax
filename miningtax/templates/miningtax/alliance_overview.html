@@ -10,7 +10,7 @@
     {% include "miningtax/_nav.html" with active="billing" %}
 
     <div class="d-flex justify-content-between align-items-center mb-4">
-        <h1>🏛️ {% trans "Alliance Billing" %} — {{ month }}/{{ year }}</h1>
+        <h1>🏛️ {% trans "Alliance Billing" %} — {{ month }}/{{ year }}{% if month_frozen %} <span class="badge text-bg-secondary fs-6 align-middle" title="{% trans "The payment code for this month has been released. Its invoices are final and can no longer be recalculated." %}">🔒 {% trans "Final" %}</span>{% endif %}</h1>
         <div class="d-flex gap-2">
             {% if is_full_officer %}
             <a href="{% url 'miningtax:check_payments_now' %}?year={{ year }}&month={{ month }}"
@@ -18,19 +18,17 @@
                 💰 {% trans "Check Payments Now" %}
             </a>
             {% comment %}
-              Rebuilds the AllianceBillingRecord snapshot (totals, categories,
-              members) for the month currently being viewed. Needed because the
-              daily sync only ever touches *today's* month — a closed month
-              whose snapshot predates a logic or schema change has no other
-              automatic path to catch up. Runs as a task so the result shows
-              up in the task monitor instead of being an invisible thing a
-              page load did.
+              Rebuilds the snapshot for the month being viewed — only offered
+              while the month isn't final. Once its payment code is released
+              the invoices must not change (the server refuses it as well).
             {% endcomment %}
+            {% if not month_frozen %}
             <a href="{% url 'miningtax:rebuild_billing_snapshot' %}?year={{ year }}&month={{ month }}"
                class="btn btn-sm btn-outline-warning"
                onclick="return confirm('{% trans "Rebuild the billing snapshot for" %} {{ month }}/{{ year }}? {% trans "Paid records are left untouched." %}')">
                 🔄 {% trans "Rebuild Snapshot" %}
             </a>
+            {% endif %}
             <a href="{% url 'miningtax:download_all_corps_zip' %}?year={{ year }}&month={{ month }}"
                class="btn btn-sm btn-outline-success">
                 📦 {% trans "Download All as ZIP" %}
@@ -67,8 +65,14 @@
         </a>
     </div>
 
+    {% comment %}
+      Mining, tax and rental cover the whole month — every corp on the page,
+      paid or not — so once the month is final they never change. What is
+      still to be collected is the fourth card, the only one that shrinks as
+      corps pay.
+    {% endcomment %}
     <div class="row mb-4">
-        <div class="col-md-4">
+        <div class="col-md-3">
             <div class="card">
                 <div class="card-body">
                     <div class="text-muted">
@@ -78,7 +82,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
             <div class="card">
                 <div class="card-body">
                     <div class="text-muted">{% trans "Total Mining Tax" %}</div>
@@ -86,18 +90,19 @@
                 </div>
             </div>
         </div>
-        {% comment %}
-          Same "unpaid only" figure as the two cards above — deliberately, not
-          an approximation. total_due is one combined number per corp (tax +
-          rental together), so there is no way to tell whether a paid amount
-          covered the rental, the tax, or both; treating rental identically to
-          the other two is the only definition the underlying data supports.
-        {% endcomment %}
-        <div class="col-md-4">
+        <div class="col-md-3">
             <div class="card">
                 <div class="card-body">
                     <div class="text-muted">{% trans "Total Moon Rental" %}</div>
                     <div class="fs-4 text-info">{{ totals.rental|isk }} ISK</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="text-muted">{% trans "Still Outstanding" %}</div>
+                    <div class="fs-4 text-warning">{{ totals.outstanding|isk }} ISK</div>
                 </div>
             </div>
         </div>

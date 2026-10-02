@@ -1,13 +1,13 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.21**
+**Version 0.10.22**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
 ## Features
 
 - **Personal mining dashboard** — this month's ledger entries with calculated tax, plus a daily summary card for yesterday (total value, tax, top 5 ores by value) so a quick check doesn't require scrolling the full table
-- **Alliance-wide billing overview** — all corps, all members (grouped by main character, sorted alphabetically), tax by ore category, moon rental fees, and total due, with alliance-wide totals for mining, tax, and moon rental at the top. Reads from a daily-refreshed snapshot rather than recalculating the month live, so the page loads instantly instead of iterating the full ledger on every view. Corporations outside the taxable scope (left the alliance, never in it) and corporations owing nothing this month are left off the list entirely rather than shown at 0 ISK
+- **Alliance-wide billing overview** — all corps, all members (grouped by main character, sorted alphabetically), tax by ore category, moon rental fees, and total due, with totals for the whole month's mining, tax and moon rental at the top — paid or not, so they never change once the month is final — and a fourth figure for what is still outstanding, the only one that shrinks as corps pay. Reads from a daily-refreshed snapshot rather than recalculating the month live, so the page loads instantly instead of iterating the full ledger on every view. Corporations outside the taxable scope (left the alliance, never in it) and corporations owing nothing this month are left off the list entirely rather than shown at 0 ISK
 - **Configurable tax rates** per ore category (R4 / R8 / R16 / R32 / R64 / Ice / Ore / Gas / Mercoxit), plus any category you define yourself
 - **Complete ore list, maintained by ESI** — every mineable type is imported and classified by its EVE group, so a newly introduced ore is never taxed at the Default rate unnoticed. The Settings page reports how many mined types still lack a category
 - **Category rules** — assign ore to a category by name, ahead of EVE's own grouping: abyssal ore and Prismaticite sit in ordinary asteroid groups yet warrant their own rate. Rules apply to ore that doesn't exist yet, as long as the name matches. A category can also be locked so the automatic import leaves it alone
@@ -346,13 +346,15 @@ Corp observer data always takes precedence over personal ledger data for the sam
 
 ## Automatic Payment Verification
 
-When a `TreasuryConfig` is active, the daily sync (and the manual "Check Payments Now" button, run as a Celery task) reads the configured corp's wallet journal and automatically marks matching invoices as paid (`auto_verified=True`). Invoices with nothing due (`total_due <= 0`) are skipped entirely, so a stray matching transaction can't trivially mark a zero-tax invoice as paid.
+When a `TreasuryConfig` is active, the daily sync — for every month whose payment code is out and that still has open invoices — and the manual "Check Payments Now" button (for the month being viewed, run as a Celery task) read the configured corp's wallet journal and automatically marks matching invoices as paid (`auto_verified=True`). Invoices with nothing due (`total_due <= 0`) are skipped entirely, so a stray matching transaction can't trivially mark a zero-tax invoice as paid.
 
 Use "Reset to Unpaid" to correct a mismatch, e.g. after testing.
 
 ### Payment Code Timing
 
-Each corp's payment reference code stays hidden on the Alliance Billing page until a configurable day and hour of the following month — a **day (1–28)** and an **hour (UTC)**, set from a card at the top of the Tax Rates tab, defaulting to day 2 at 11:00 UTC (EVE downtime). A billing record can exist — and the page can render — before that point, since the record itself is written by the daily snapshot sync; the reveal time specifically waits so the code is never handed to a payer before the closing days of the month have had a full sync cycle to land. Before the reveal time, the hint text configured in the same card is shown instead — it accepts `{reveal_day}` and `{reveal_time}` placeholders, filled in automatically from the day/hour fields, and leaves an unrecognised placeholder visible as literal text rather than failing.
+Each corp's payment reference code stays hidden on the Alliance Billing page until a configurable day and hour of the following month — a **day (1–28)** and an **hour (UTC)**, set from a card at the top of the Tax Rates tab, defaulting to day 2 at 11:00 UTC (EVE downtime). A billing record can exist — and the page can render — before that point, since the record itself is written by the daily snapshot sync; the reveal time specifically waits so the code is never handed to a payer before the closing days of the month have had a full sync cycle to land.
+
+**The reveal is also the moment a month becomes final.** Until then the nightly sync keeps recalculating the previous month alongside the running one, so its closing days are billed; from the reveal on, nothing changes the month again — not the nightly sync, and not Rebuild Snapshot, whose button disappears for that month (the page shows a 🔒 Final badge instead) and which the server refuses as well. A corp can only pay once it has the code, so the amount it transfers is always the amount on record. Before the reveal time, the hint text configured in the same card is shown instead — it accepts `{reveal_day}` and `{reveal_time}` placeholders, filled in automatically from the day/hour fields, and leaves an unrecognised placeholder visible as literal text rather than failing.
 
 ---
 
@@ -436,7 +438,7 @@ This runs: personal ledger sync, corp observer sync, market prices, billing reco
 ## Development
 
 Tested with:
-- Alliance Auth 5.3.1
+- Alliance Auth 5.4.0
 - Django 5.2
 - django-esi 9.x
 - django-eveuniverse 2.x (optional, for refined-value pricing)

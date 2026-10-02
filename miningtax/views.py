@@ -13,7 +13,7 @@ from .models import (
     MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord,
     TreasuryConfig, SovFilterConfig, JaniceConfig, TaxExemption, SovSystem,
 )
-from .billing import calculate_entry_tax, calculate_alliance_billing, mark_corp_paid
+from .billing import calculate_entry_tax, is_month_frozen
 from .services import (
     sync_character_mining, update_market_prices, sync_all_corp_observers,
     STRUCTURE_ID_THRESHOLD,
@@ -303,29 +303,26 @@ def alliance_overview(request):
     year = int(request.GET.get('year', today.year))
     month = int(request.GET.get('month', today.month))
 
-    # Use cached billing records instead of live calculation for better performance
-    # Live calculation can take 2-3 minutes for large alliances; records are updated daily
+    # Reads the month's stored invoices only. A month is calculated in exactly
+    # two places: the Rebuild Snapshot button, and the nightly sync for the
+    # running month. Opening the page never calculates — it used to, whenever a
+    # month had no invoices yet, which could run for minutes inside a page load.
     billing_records = AllianceBillingRecord.objects.filter(
         month=month, year=year
     ).select_related('corporation')
 
-    # If no records exist yet, calculate once and save them
+    month_frozen = is_month_frozen(year, month)
     if not billing_records.exists():
-        from .billing import save_billing_records_for_month
-        save_billing_records_for_month(year, month)
-        billing_records = AllianceBillingRecord.objects.filter(
-            month=month, year=year
-        ).select_related('corporation')
-
-    rental_totals = {}
-    for rental in MoonRental.objects.filter(active=True).select_related('corporation'):
-        corp_id = rental.corporation.corporation_id
-        rental_totals[corp_id] = rental_totals.get(corp_id, Decimal('0')) + rental.monthly_fee
+        if has_full_officer_access(request.user) and not month_frozen:
+            messages.info(request, f'No invoices exist for {month:02d}/{year} yet — press Rebuild Snapshot to calculate them.')
+        else:
+            messages.info(request, f'No invoices exist for {month:02d}/{year} yet.')
 
     corps_with_status = {}
     totals_mined = Decimal('0')
     totals_tax = Decimal('0')
     totals_rental = Decimal('0')
+    totals_outstanding = Decimal('0')
 
     from .billing import is_corp_outside_taxable_scope
 
@@ -370,54 +367,24 @@ def alliance_overview(request):
             'total_due': total_due,
         }
 
+        # Mining, tax and rental cover the whole month, paid or not, so they
+        # stay fixed once the month is final — marking a corp paid used to
+        # take it out of all three, which looked like the month itself had
+        # changed. What is still to be collected has its own figure.
+        totals_mined += record.total_mined_value
+        totals_tax += record.mining_tax_amount
+        totals_rental += rental_fee
         if not record.paid:
-            totals_mined += record.total_mined_value
-            totals_tax += record.mining_tax_amount
-            # Same "unpaid only" definition as mining/tax above — deliberately,
-            # not an approximation: total_due is a single combined figure per
-            # corp (tax + rental together), so there is no way to know whether
-            # a paid amount covered the rental, the tax, or both. Treating
-            # rental the same as the other two is the only definition the data
-            # can actually support, not merely the simplest one.
-            totals_rental += rental_fee
+            totals_outstanding += total_due
 
-    # Add rental-only corps that don't have mining records
-    for corp_id, rental_fee in rental_totals.items():
-        if corp_id not in corps_with_status:
-            from allianceauth.eveonline.models import EveCorporationInfo
-            try:
-                corp_obj = EveCorporationInfo.objects.get(corporation_id=corp_id)
-            except EveCorporationInfo.DoesNotExist:
-                continue
-
-            if is_corp_outside_taxable_scope(corp_id, corp_obj.corporation_name):
-                continue
-
-            # Same zero-due rule as above: a rental-only corp still owes its
-            # rental fee, so this branch is unaffected unless the fee itself
-            # is zero, which would be a MoonRental configured at 0 ISK.
-            if rental_fee <= 0:
-                continue
-
-            corps_with_status[corp_id] = {
-                'corp_name': corp_obj.corporation_name,
-                'total_mined': Decimal('0'),
-                'total_tax': Decimal('0'),
-                'members': {},
-                'categories': {},
-                'paid': False,
-                'paid_at': None,
-                'auto_verified': False,
-                'moon_rental_total': rental_fee,
-                'total_due': rental_fee,
-            }
-            # This branch only exists for corps with no mining record, always
-            # unpaid by construction — so its rental always counts toward the
-            # same "unpaid only" total the mining-record branch above uses.
-            totals_rental += rental_fee
+    # The page shows stored invoices only. It used to add any corp with a
+    # moon rental active *today* but no invoice for the month, into whatever
+    # month was viewed — a corp renting since September appeared in August as
+    # owing rent it never owed there. Rental-only corps get a real invoice from
+    # the month's calculation itself (see save_billing_records_for_month()).
 
     restricted_to_corp = None
-    totals = {'mined': totals_mined, 'tax': totals_tax, 'rental': totals_rental}
+    totals = {'mined': totals_mined, 'tax': totals_tax, 'rental': totals_rental, 'outstanding': totals_outstanding}
 
     if is_corp_scoped(request.user):
         restricted_to_corp = own_corporation_id(request.user)
@@ -429,6 +396,7 @@ def alliance_overview(request):
             'mined': sum((c['total_mined'] for c in corps_with_status.values()), Decimal('0')),
             'tax': sum((c['total_tax'] for c in corps_with_status.values()), Decimal('0')),
             'rental': sum((c['moon_rental_total'] for c in corps_with_status.values()), Decimal('0')),
+            'outstanding': sum((c['total_due'] for c in corps_with_status.values() if not c['paid']), Decimal('0')),
         }
 
     from .payments import payment_code_for
@@ -467,6 +435,7 @@ def alliance_overview(request):
         'restricted_to_corp': restricted_to_corp,
         'is_full_officer': has_full_officer_access(request.user),
         'payment_hint': payment_hint,
+        'month_frozen': month_frozen,
     }
     return render(request, 'miningtax/alliance_overview.html', context)
 
@@ -487,28 +456,39 @@ def mark_paid(request, corp_id):
     year = int(request.POST.get('year', date.today().year))
     month = int(request.POST.get('month', date.today().month))
 
-    data = calculate_alliance_billing(year, month)
+    # Marks the invoice exactly as it stands in the month's snapshot — never
+    # recalculates. A fresh calculation on every click was slow enough to time
+    # out the request on a large alliance, and it re-priced the invoice at the
+    # moment of payment, so a closed month could be marked paid at a different
+    # amount than the corp was shown. Only Rebuild Snapshot calculates a month.
+    from django.utils import timezone
+    from allianceauth.eveonline.models import EveCorporationInfo
+    from .pdf_views import _get_record  # local: pdf_views imports from this module
 
-    if corp_id not in data['corps']:
-        logger.warning(f'{request.user.username}: mark_paid failed — no data for corp {corp_id} in {month}/{year}')
-        messages.error(request, '❌ No data found for this corp this month.')
+    corp = EveCorporationInfo.objects.filter(corporation_id=corp_id).first()
+    record = _get_record(corp, year, month) if corp else None
+
+    if record is None:
+        logger.warning(f'{request.user.username}: mark_paid failed — no invoice for corp {corp_id} in {month}/{year}')
+        messages.error(request, '❌ No invoice exists for this corp this month — press Rebuild Snapshot first.')
         return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
-    corp_data = data['corps'][corp_id]
-    record = mark_corp_paid(corp_id, corp_data, year, month)
+    if record.paid:
+        messages.info(request, f'{corp.corporation_name} is already marked as paid for {month:02d}/{year}.')
+        return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
-    if record:
-        logger.info(
-            f'{request.user.username}: {corp_data["corp_name"]} for {month:02d}/{year} '
-            f'MANUALLY marked as paid ({record.total_due} ISK)'
-        )
-        messages.success(
-            request,
-            f'✅ {corp_data["corp_name"]} marked as paid for {month:02d}/{year}.'
-        )
-    else:
-        logger.warning(f'{request.user.username}: mark_paid failed — corp {corp_id} not found')
-        messages.error(request, '❌ Corporation not found.')
+    record.paid = True
+    record.paid_at = timezone.now()
+    record.auto_verified = False
+    record.save(update_fields=['paid', 'paid_at', 'auto_verified'])
+
+    # This line is what tells a manual marking apart from an automatic one in
+    # the log — keep the wording.
+    logger.info(
+        f'{request.user.username}: {corp.corporation_name} for {month:02d}/{year} '
+        f'MANUALLY marked as paid ({record.total_due} ISK)'
+    )
+    messages.success(request, f'✅ {corp.corporation_name} marked as paid for {month:02d}/{year}.')
 
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
@@ -556,13 +536,17 @@ def check_payments_now(request):
     year = int(request.GET.get('year', date.today().year))
     month = int(request.GET.get('month', date.today().month))
 
-    logger.info(f'{request.user.username}: payment check queued for {month:02d}/{year}')
-    check_payments_task.delay(year, month, requested_by=request.user.username)
+    # Checks every month whose payment code is out and that still has open
+    # invoices — not just the month on screen. The page opens on the running
+    # month, which can't have been paid yet, so pressing the button there used
+    # to check exactly the month no payment could be for.
+    logger.info(f'{request.user.username}: payment check queued for all released months with open invoices')
+    check_payments_task.delay(requested_by=request.user.username)
 
     messages.success(
         request,
-        '✅ Payment check started in the background — check the log or refresh '
-        'this page shortly for results.'
+        '✅ Payment check started in the background for every month with open '
+        'invoices — refresh this page shortly for results.'
     )
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
@@ -572,16 +556,23 @@ def rebuild_billing_snapshot(request):
     """
     Rebuilds the billing snapshot for a given month as a background task.
 
-    Exists because the daily sync only ever recalculates the *current* month —
-    a closed month whose snapshot predates a schema/logic change (member_snapshot
-    being added, a tax-rule fix, etc.) has no automatic path to pick that up.
-    Running as a task rather than inline so it's visible in the task monitor
-    instead of being an invisible thing that happened during a page load.
+    Refused for a frozen month — once its payment code is revealed a month's
+    invoices are final, so a payment already sent always matches the amount
+    on record. Runs as a task rather than inline so it's visible in the task
+    monitor instead of being an invisible thing that happened during a page load.
     """
     from .tasks import rebuild_billing_snapshot_task
 
     year = int(request.GET.get('year', date.today().year))
     month = int(request.GET.get('month', date.today().month))
+
+    if is_month_frozen(year, month):
+        messages.error(
+            request,
+            f'🔒 {month:02d}/{year} is final — its payment code has been released, '
+            f'so its invoices can no longer be recalculated.'
+        )
+        return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
     logger.info(f'{request.user.username}: billing snapshot rebuild queued for {month:02d}/{year}')
     rebuild_billing_snapshot_task.delay(year, month, requested_by=request.user.username)

@@ -1085,30 +1085,63 @@ def _serialise_members(members):
     }
 
 
+def previous_month(year, month):
+    """(year, month) of the month before the given one."""
+    return (year, month - 1) if month > 1 else (year - 1, 12)
+
+
+def is_month_frozen(year, month, now=None):
+    """
+    True once a month's invoices are final — from the moment its payment code
+    is revealed (the day and UTC hour set under Payment Code Timing) onwards.
+
+    From then on nothing may change the month: not the nightly sync, not
+    Rebuild Snapshot. Corps can only pay once they have the code, so a frozen
+    amount is exactly what they transfer — recalculating it afterwards could
+    change the total under a payment already on its way, and the payment
+    check would then no longer recognise it. The nightly syncs before the
+    reveal are the month's last ones; they still pick up its closing days.
+    """
+    from .auth_hooks import last_issued_month
+    return (year, month) <= last_issued_month(now)
+
+
+def months_to_recalculate(now=None):
+    """
+    The months the nightly sync recalculates: the running month, plus the
+    previous month for as long as it isn't frozen. Without the second, a
+    month's last snapshot was taken on its final night, before its closing
+    day's mining (and whatever ESI reports late) had landed — and that day was
+    never billed.
+    """
+    from django.utils import timezone
+
+    now = now or timezone.now()
+    months = [(now.year, now.month)]
+    prev = previous_month(now.year, now.month)
+    if not is_month_frozen(*prev, now=now):
+        months.append(prev)
+    return months
+
+
 def save_billing_records_for_month(year, month):
     """
     Saves an AllianceBillingRecord for all corps for a given month.
 
-    Called daily for the CURRENT month only (see daily_mining_sync_task) — a
-    past month is deliberately never swept automatically once it has ended,
-    whether or not its corps have paid yet: a corp's invoice is meant to be a
-    known, stable number the moment the month closes, not something that can
-    silently move underneath a payer because an unrelated rule changed
-    afterward (a tax-rate fix, a join-date correction, anything else). An
-    officer who genuinely needs to correct a past month can still do so
-    explicitly via the "Rebuild Snapshot" button — a deliberate, visible,
-    logged action, not something that happens on its own overnight.
+    Only ever called for a month that isn't frozen (see is_month_frozen()):
+    by the nightly sync for the months months_to_recalculate() returns, and by
+    Rebuild Snapshot, which refuses a frozen month. A paid record is never
+    overwritten either way (save_billing_record() skips it).
 
     Includes corps that mined nothing this month but still owe a moon rental:
     calculate_alliance_billing() only ever discovers a corp through its ledger
     entries, so a corp with an active MoonRental and zero mining would
     otherwise never get a record at all — no record for save_billing_record()
-    to skip once paid, and nothing for a PDF/CSV export to find, ever, no
-    matter how many times the export is retried. alliance_overview() already
-    had to special-case this in its own view code; folding it in here means
-    every caller (PDF, CSV, ZIP, this month's daily save, a manual rebuild)
-    gets it for free instead of alliance_overview() being the only one that
-    knew about rental-only corps.
+    to skip once paid, and nothing for a PDF/CSV export to find.
+
+    Called from exactly two places: the Rebuild Snapshot task, and the nightly
+    sync for the running month. Nothing else may calculate a month — pages,
+    exports and Mark as Paid only ever read the stored invoices.
     """
     data = calculate_alliance_billing(year, month)
     saved = 0
@@ -1202,16 +1235,6 @@ def save_billing_record(corp_id, corp_data, year, month):
         record.member_snapshot = member_snapshot
         record.save()
 
-    return record
-
-
-def mark_corp_paid(corp_id, corp_data, year, month):
-    """Saves the billing record and marks it as paid."""
-    record = save_billing_record(corp_id, corp_data, year, month)
-    if record:
-        record.paid = True
-        record.paid_at = timezone.now()
-        record.save(update_fields=['paid', 'paid_at'])
     return record
 
 

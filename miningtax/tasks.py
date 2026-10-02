@@ -1,5 +1,4 @@
 import logging
-from datetime import date
 
 from celery import shared_task
 
@@ -15,8 +14,8 @@ logger = logging.getLogger(__name__)
 # + billing records + payment check
 @shared_task
 def daily_mining_sync_task():
-    from .billing import save_billing_records_for_month
-    from .payments import check_corp_payments
+    from .billing import months_to_recalculate, save_billing_records_for_month
+    from .payments import check_open_payments
     from .services import sync_sov_systems, sync_ore_categories
 
     # Refreshed first so any ore added to EVE is classified before the
@@ -38,16 +37,17 @@ def daily_mining_sync_task():
     priced = update_market_prices()
     sov_systems = sync_sov_systems()
 
-    today = date.today()
-    # Deliberately the CURRENT month only. A past month is not recalculated
-    # here even if it still has unpaid corps in it — once a month ends, its
-    # invoice is meant to be a fixed, known number, not something that can
-    # silently shift overnight because an unrelated rule changed afterward.
-    # An officer who needs to correct a past month does so explicitly via the
-    # "Rebuild Snapshot" button, a deliberate and visible action rather than
-    # something the nightly sync decides on its own.
-    billing_saved = save_billing_records_for_month(today.year, today.month)
-    payments_matched = check_corp_payments(today.year, today.month)
+    # The running month, plus the previous one until its payment code is
+    # revealed — those runs are the month's last syncs, so its closing days are
+    # billed too. From the reveal on the month is frozen and nothing touches it
+    # again (see billing.is_month_frozen()).
+    months = months_to_recalculate()
+    billing_saved = 0
+    for year, month in months:
+        billing_saved += save_billing_records_for_month(year, month)
+
+    # Every month whose payment code is out and that still has open invoices.
+    payments_matched = check_open_payments()
 
     result = (
         f'{ore_new} new ore types, '
@@ -56,7 +56,7 @@ def daily_mining_sync_task():
         f'{synced_corps} corp observer entries, '
         f'{priced} prices updated, '
         f'{sov_systems} sovereignty systems tracked, '
-        f'{billing_saved} billing records saved, '
+        f'{billing_saved} billing records saved ({", ".join(f"{m:02d}/{y}" for y, m in months)}), '
         f'{payments_matched} payments automatically detected'
     )
     logger.info(f'Daily sync complete: {result}')
@@ -119,18 +119,19 @@ def manual_sync_task(user_id):
 
 # Triggered by the "Check Payments Now" button — runs in the background.
 @shared_task
-def check_payments_task(year, month, requested_by=None):
-    from .payments import check_corp_payments
+def check_payments_task(year=None, month=None, requested_by=None):
+    """
+    Backs "Check Payments Now": checks every month whose payment code is out
+    and that still has open invoices, the same set the nightly check uses.
+    year/month are accepted only so a check queued by the previous version
+    still runs; they no longer narrow it down.
+    """
+    from .payments import check_open_payments
 
-    # Corptools-first here too, same as the automatic daily check — the
-    # payment code doesn't reveal until the 2nd of the month anyway, so
-    # Corptools' own sync lag behind ESI is never actually the bottleneck;
-    # there's no scenario where this button needs fresher data than
-    # Corptools already has.
-    matched = check_corp_payments(year, month)
+    matched = check_open_payments()
 
     logger.info(
-        f'Manual payment check for {month:02d}/{year}' +
+        'Manual payment check' +
         (f' by {requested_by}' if requested_by else '') +
         f' complete: {matched} corp(s) marked as paid'
     )
@@ -267,7 +268,13 @@ def rebuild_billing_snapshot_task(year, month, requested_by=None):
     silently rewritten by a rebuild.
     """
     from .models import AllianceBillingRecord
-    from .billing import save_billing_records_for_month
+    from .billing import is_month_frozen, save_billing_records_for_month
+
+    # Checked here as well as in the view: a queued rebuild must not slip past
+    # the moment its month became final.
+    if is_month_frozen(year, month):
+        logger.warning(f'Billing snapshot rebuild for {month:02d}/{year} refused — month is final')
+        return f'refused: {month:02d}/{year} is final (payment code already released)'
 
     existing = AllianceBillingRecord.objects.filter(year=year, month=month)
     paid_count = existing.filter(paid=True).count()

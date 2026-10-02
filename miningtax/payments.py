@@ -236,3 +236,33 @@ def check_corp_payments(year, month):
 
     logger.info(f'Payment check for {month:02d}/{year} complete: {total_matched}/{open_count} corp(s) marked as paid')
     return total_matched
+
+
+def months_with_open_invoices(now=None):
+    """
+    Every month whose payment code is already out and that still has unpaid
+    invoices with something due — the months a payment can actually arrive
+    for. The running month is never among them: nobody can pay it yet.
+    """
+    from .auth_hooks import last_issued_month
+
+    last = last_issued_month(now)
+    months = set(
+        AllianceBillingRecord.objects.filter(paid=False, total_due__gt=0)
+        .values_list('year', 'month')
+    )
+    return sorted(m for m in months if m <= last)
+
+
+def check_open_payments(now=None):
+    """
+    The nightly payment check: check_corp_payments() for every month in
+    months_with_open_invoices(). It used to check only the running month —
+    the one month whose invoices can't have been paid yet — so payments for
+    the months actually being paid were only ever found by pressing
+    Check Payments Now on that month's page.
+    """
+    matched = 0
+    for year, month in months_with_open_invoices(now):
+        matched += check_corp_payments(year, month)
+    return matched
