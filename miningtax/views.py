@@ -13,7 +13,7 @@ from .models import (
     MiningLedgerEntry, TaxRate, MoonRental, AllianceMoon, AllianceBillingRecord,
     TreasuryConfig, SovFilterConfig, JaniceConfig, TaxExemption, SovSystem,
 )
-from .billing import calculate_entry_tax, is_month_frozen
+from .billing import cached_corp_join_date, calculate_entry_tax, is_month_frozen
 from .services import (
     sync_character_mining, update_market_prices, sync_all_corp_observers,
     STRUCTURE_ID_THRESHOLD,
@@ -420,6 +420,17 @@ def alliance_overview(request):
 
     for cid, cdata in corps_with_status.items():
         cdata['payment_code'] = payment_code_for(cid, month, year) if code_revealed else None
+
+    # Paid corps first, unpaid below; within each group by the date the corp
+    # joined the alliance, longest-standing first. The join dates come from
+    # the cache the nightly sync keeps filled — the page never asks ESI — so a
+    # corp whose date isn't known yet goes to the end of its group, by name.
+    def _billing_order(item):
+        corp_id, corp = item
+        joined = cached_corp_join_date(corp_id)
+        return (not corp['paid'], joined is None, joined or date.max, corp['corp_name'].lower())
+
+    corps_with_status = dict(sorted(corps_with_status.items(), key=_billing_order))
 
     prev_year, prev_month = _prev_month(year, month)
 

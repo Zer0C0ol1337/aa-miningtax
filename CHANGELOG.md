@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.10.23] - 2026-10-04
+
+### Changed
+- **Alliance Billing lists paid corps first and unpaid ones below, each group ordered by when the corp joined the alliance** — longest-standing first. The order used to be whatever order the invoices happened to be stored in. A corp whose join date isn't known yet goes to the end of its group, by name
+- The page reads the join dates from the cache only and never calls ESI itself. The nightly sync and Rebuild Snapshot now keep the date cached for every corp with an invoice — including corps that only pay a moon rental, which were never looked up before. At most one ESI call per corp per day, inside the task. Right after updating, the order fills in completely after the next nightly run, or immediately with Rebuild Snapshot on the running month
+
+
 ## [0.10.22] - 2026-10-02
 
 ### Fixed

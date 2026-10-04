@@ -621,6 +621,19 @@ def get_corp_join_date(corporation_id):
     return join_date
 
 
+def cached_corp_join_date(corporation_id):
+    """
+    A corp's alliance join date from the cache only, or None if it isn't
+    cached yet (or is known to be unknown). Never calls ESI — it serves the
+    billing page's sort order, and a page must not wait on ESI. The nightly
+    sync and Rebuild Snapshot keep it filled (see save_billing_records_for_month()).
+    """
+    cached = cache.get(f'miningtax:corp_join_date:{corporation_id}')
+    if cached is None or cached == 'none':
+        return None
+    return cached
+
+
 def is_before_corp_join_date(entry, corporation):
     """
     True when the entry's date predates the corporation's current alliance
@@ -1183,6 +1196,16 @@ def save_billing_records_for_month(year, month):
         record = save_billing_record(corp_obj.corporation_id, empty_corp_data, year, month)
         if record:
             saved += 1
+
+    # Keeps every billed corp's alliance join date cached for the billing
+    # page's sort order. Corps that only pay rent are otherwise never looked
+    # up, because only mining triggers the join-date check. At most one ESI
+    # call per corp per day (the result is cached), and only here in the
+    # task — never while a page loads.
+    for corp_id in AllianceBillingRecord.objects.filter(
+        year=year, month=month
+    ).values_list('corporation__corporation_id', flat=True):
+        get_corp_join_date(corp_id)
 
     return saved
 
