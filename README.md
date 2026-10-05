@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.25**
+**Version 0.10.26**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -16,7 +16,7 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 - **Tax exemptions** — exempt a whole corporation, or a single player by their main character; alts on the same Alliance Auth account are covered automatically, including ones registered later. Exemptions can be paused instead of deleted
 - **Moon rentals** — corps renting a moon pay a flat monthly fee; mining there is tax-free for them
 - **Tax-free event moons** — alliance moons can be marked tax-free, optionally scoped to a specific structure when several share one solar system
-- **Dropdown moon configuration** — solar system, moon and structure are picked from lists rather than typed. Moons come from ESI for the chosen system, structures from the corp's mining observers, so a typo can no longer quietly break exemption matching
+- **Dropdown moon configuration** — solar system, moon and structure are picked from lists rather than typed. Moons come from the local static data (eve_sde, then eveuniverse) with ESI only as a fallback, structures from Corptools first, so a typo can no longer quietly break exemption matching
 - **Per-pilot detail view** — every ledger entry of a player for a month, split by character and by ore category. Officers reach it from the billing member list, members from their own dashboard for their own characters. Characters with no mining are listed too, which is how an alt that never synced becomes visible
 - **PDF invoices** — per-corp invoice or all corps as a ZIP
 - **Corp Observer sync** — a director/CEO token pulls mining data for all moons/structures of a corp, covering members who never log in to Alliance Auth themselves
@@ -152,7 +152,9 @@ LOGGING['loggers']['miningtax'] = {
 
 Every sync, payment match/miss, and admin action (mark paid/unpaid, settings changes) is logged to `log/miningtax.log` with the acting username — check this file first when something doesn't look right.
 
-### 5. Celery worker required
+### 5. Celery worker and the daily schedule
+
+Add the daily sync to `local.py` as shown under [Celery Beat](#celery-beat) — the plugin does not schedule it on its own, so without that entry nothing syncs.
 
 "Sync Now" and "Check Payments Now" run as background Celery tasks, so a Celery worker must be running for them to complete (they queue instantly but need the worker to process). This is normally already running as part of a standard Alliance Auth deployment.
 
@@ -182,7 +184,7 @@ Three tiers, each a superset of the one above it:
 Codenames predate the tier names and are kept as they are: group assignments
 point at them, so renaming would quietly void every existing assignment.
 
-Superusers (`is_staff`/`is_superuser`) always have full access regardless of assigned permissions.
+Superusers (`is_superuser`) always have full access regardless of assigned permissions. Staff status alone (`is_staff`) grants nothing here.
 
 **`corp_billing` is scoped to one corporation** — the one the holder's main character belongs to. That applies everywhere the same way: the billing page and its summary figures, the PDF invoice, the all-corps ZIP (which contains only their corp) and the CSV export — all read-only. It does **not** grant marking an invoice paid or unpaid, Settings, or any alliance-wide action — those, as well as manual sync, Check Payments Now and editing tax rates, moons or treasury, all need `mining_officer`. A corp that could mark its own invoice paid could clear its bill without transferring anything.
 
@@ -190,7 +192,7 @@ The plugin deliberately makes no assumptions about who deserves which access. Ea
 
 **Recommended assignment:**
 - All alliance members: **View**
-- Corp leadership who should see their own corp's bill: **Corp**
+- Corp leadership who should see their own corp's bill: **Corp** — together with **View**: the sidebar entry is shown to `basic_access` holders, so `corp_billing` alone works by direct link but has no menu entry
 - Alliance Leader, Co-Leader, Mining Officer roles: **Admin**
 
 ---
@@ -387,40 +389,28 @@ corporation.
 
 ## URL Overview
 
-| URL | View | Access |
+All routes require a login. Every action that changes something is a POST with a CSRF token — opening a link never triggers one.
+
+| URL | What | Access |
 |---|---|---|
-| `/miningtax/` | Dashboard | `basic_access` (or CEO) |
-| `/miningtax/sync/` | Manual sync (background task) | `basic_access` (or CEO) |
-| `/miningtax/alliance/` | Alliance billing (full for officers, own-corp-only for CEOs) | `mining_officer` or CEO |
-| `/miningtax/alliance/check-payments/` | Manual payment check (background task) | `mining_officer` only |
-| `/miningtax/settings/` | Settings | `mining_officer` only |
-| `/miningtax/settings/janice/save/` | Save Janice pricing config | `mining_officer` only |
-| `/miningtax/alliance/pilot/<character_id>/` | Per-pilot detail (own characters, or anyone as officer) | `basic_access` (own) / `mining_officer` |
-| `/miningtax/settings/sov-filter/sync-now/` | Refresh the known systems list | `mining_officer` only |
-| `/miningtax/settings/ore-categories/sync/` | Import the ore list from ESI | `mining_officer` only |
-| `/miningtax/settings/taxrate/add/` | Create a rate for a category | `mining_officer` only |
-| `/miningtax/settings/exemption/add/` | Add a tax exemption | `mining_officer` only |
-| `/miningtax/api/moons/` | Moons of a system (JSON, for the dropdowns) | `mining_officer` only |
-| `/miningtax/api/structures/` | Structures of a corp (JSON, for the dropdowns) | `mining_officer` only |
-| `/miningtax/pdf/corp/<id>/` | PDF per corp | `mining_officer` or CEO |
-| `/miningtax/pdf/all/` | ZIP of all corps | `mining_officer` only |
+| `/miningtax/` | Dashboard: own ledger and characters | `basic_access` |
+| `/miningtax/alliance/pilot/<character_id>/` | Per-pilot detail | own characters; own corp for `corp_billing`; anyone for `mining_officer` |
+| `/miningtax/csv/pilot/<character_id>/` | CSV of one pilot's ledger | same as pilot detail |
+| `/miningtax/alliance/` | Alliance billing | `corp_billing` (own corp, read-only) or `mining_officer` |
+| `/miningtax/pdf/corp/<corp_id>/`, `/miningtax/pdf/all/` | PDF invoice, ZIP of all invoices | `corp_billing` (own corp) or `mining_officer` |
+| `/miningtax/csv/alliance/` | CSV of the month's billing | `corp_billing` (own corp) or `mining_officer` |
+| `/miningtax/sync/` | Manual sync (POST, background task) | `mining_officer` |
+| `/miningtax/alliance/check-payments/` | Payment check for all released months (POST, background task) | `mining_officer` |
+| `/miningtax/alliance/rebuild-snapshot/` | Rebuild a non-final month (POST, background task) | `mining_officer` |
+| `/miningtax/alliance/paid/<corp_id>/`, `/unpaid/<corp_id>/` | Mark an invoice paid or unpaid (POST) | `mining_officer` |
+| `/miningtax/settings/` and every `/miningtax/settings/…` action | Settings page and its actions (POST) | `mining_officer` |
+| `/miningtax/api/moons/`, `/miningtax/api/system-structures/` | Moons / structures of a system (JSON, for the dropdowns) | `mining_officer` |
 
 ---
 
 ## Celery Beat
 
-The daily sync registers itself. On the first `migrate` after installing, a
-periodic task appears under **Admin → Periodic Tasks** as *miningtax: daily
-mining sync*, set to 02:00, and it is not touched again afterwards — change the
-time, rename it or untick *enabled* and the plugin leaves your edit alone.
-
-Deleting it is the one thing that does not stick: it is recreated on the next
-`migrate`, since a missing schedule looks exactly like a fresh install. Untick
-*enabled* to turn the sync off for good.
-
-Earlier versions expected an entry in `local.py` instead. That still works and
-takes precedence if present, but it is no longer needed — and forgetting it
-produced no error at all, just a plugin that quietly never synced:
+Add the daily sync to `local.py` — this is the only place it is scheduled:
 
 ```python
 from celery.schedules import crontab
@@ -433,9 +423,51 @@ CELERYBEAT_SCHEDULE['miningtax_daily_sync'] = {
 
 This runs: personal ledger sync, corp observer sync, market prices, billing record updates, payment check, all in one pass.
 
+**Upgrading from a version before 0.10.26:** earlier versions created a periodic task named *miningtax: daily mining sync* on their own during `migrate`. If you also had the `local.py` entry, Celery Beat stored it as a second schedule and the sync ran twice every night. After upgrading, open **Admin → Periodic Tasks** and keep exactly one schedule for `miningtax.tasks.daily_mining_sync_task`: add the `local.py` entry above and delete *miningtax: daily mining sync*. Every task is also protected by `QueueOnce` now, so even two schedules can no longer run at the same time.
+
+---
+
+## Upgrading
+
+```bash
+pip install -U git+https://github.com/Zer0C0ol1337/aa-miningtax.git@vX.Y.Z
+python manage.py migrate
+python manage.py collectstatic --noinput
+```
+
+Then restart Auth and its Celery workers and beat. Read the CHANGELOG entries between your version and the new one first — entries with a **Database** section need `migrate`, and some describe one-off steps (such as the schedule clean-up above).
+
+Invoices of months whose payment code has been released are final: no upgrade recalculates them. Migration `0027` is the one exception — it turned all stored amounts into whole ISK, rounding what corps pay down, so every payment that covered an invoice before still covers it.
+
+---
+
+## Uninstalling
+
+1. Remove the `CELERYBEAT_SCHEDULE['miningtax_daily_sync']` entry from `local.py`, and in **Admin → Periodic Tasks** delete any schedule whose task starts with `miningtax.`.
+2. Remove the app's tables: `python manage.py migrate miningtax zero`.
+3. Remove `'miningtax'` from `INSTALLED_APPS` and uninstall the package: `pip uninstall aa-miningtax`.
+4. Restart Auth, workers and beat.
+
+Do **not** use `remove_stale_contenttypes --include-stale-apps` for the leftover content types — it deletes those of every other removed app as well. Delete the `miningtax` content types and permissions specifically by `app_label` if you want them gone.
+
+---
+
+## Data Protection
+
+The plugin stores, per character and day, what was mined where and its value; per corporation and month, the invoice with a member breakdown; and per corporation, the date it joined the alliance. This includes characters **without an Auth account**: corp mining observers report everyone who mined at a structure, and characters Auth doesn't know yet are registered in Alliance Auth (`EveCharacter`) so they can be named and attributed. Nothing is sent anywhere except ESI requests and, if enabled, the type IDs sent to the Janice price API. Data is kept indefinitely as billing history; removing it means uninstalling (see above) or deleting rows in the admin.
+
+The Janice API key is stored in the database and never shown again after saving — the settings field stays empty, and leaving it empty keeps the saved key. Invoices are read-only in the Django admin: they change only through the billing page and its tasks, which respect the month freeze and log every manual change.
+
 ---
 
 ## Development
+
+Run the test suite (plain Django, no Alliance Auth needed — it also runs on every push via GitHub Actions):
+
+```bash
+pip install "django>=5.2,<6" reportlab pypdf pytest
+python -m pytest
+```
 
 Tested with:
 - Alliance Auth 5.4.0

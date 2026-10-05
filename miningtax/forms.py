@@ -154,17 +154,32 @@ class SovFilterConfigForm(forms.ModelForm):
 
 # Config for the Janice refined-value pricing integration.
 class JaniceConfigForm(forms.ModelForm):
+    """
+    Janice settings. The API key is a password field that never sends the
+    stored key back to the browser; leaving it empty keeps the saved key, so
+    toggling 'enabled' doesn't require typing the key again.
+    """
     class Meta:
         model = JaniceConfig
         fields = ['enabled', 'api_key']
         widgets = {
             'enabled': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
-            'api_key': forms.TextInput(attrs={
+            'api_key': forms.PasswordInput(render_value=False, attrs={
                 'class': 'form-control',
-                'placeholder': 'Janice API key',
-                'autocomplete': 'off',
+                'placeholder': 'Janice API key — leave empty to keep the saved key',
+                'autocomplete': 'new-password',
             }),
         }
+
+    def __init__(self, *args, **kwargs):
+        # Empty is allowed: it means "keep the saved key" (see clean_api_key).
+        super().__init__(*args, **kwargs)
+        self.fields['api_key'].required = False
+
+    def clean_api_key(self):
+        # An empty field keeps the key already saved instead of erasing it.
+        key = (self.cleaned_data.get('api_key') or '').strip()
+        return key or (self.instance.api_key or '')
 
 
 # Controls when a corp's payment reference code becomes visible for the

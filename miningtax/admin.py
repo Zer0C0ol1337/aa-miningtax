@@ -125,9 +125,25 @@ class MoonRentalAdmin(admin.ModelAdmin):
 # Abrechnungs-Snapshots pro Corp/Monat
 @admin.register(AllianceBillingRecord)
 class AllianceBillingRecordAdmin(admin.ModelAdmin):
-    list_display = ('corporation', 'month', 'year', 'total_due', 'paid')
+    """
+    Read-only. Invoices change only through the billing page and its tasks,
+    which respect the month freeze and log every manual paid/unpaid change;
+    editing amounts or the paid flag here bypassed both.
+    """
+    list_display = ('corporation', 'month', 'year', 'total_due', 'paid', 'auto_verified')
     list_filter = ('paid', 'year', 'month')
-    list_editable = ('paid',)
+
+    def has_add_permission(self, request):
+        # Invoices are created by the billing calculation only.
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        # Read-only — see the class docstring.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        # Deleting an invoice would undo a final month as well.
+        return False
 
 
 # Erz-Kategorien — nur lesend, werden per Management Command befüllt

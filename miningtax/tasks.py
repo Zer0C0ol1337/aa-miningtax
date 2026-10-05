@@ -1,6 +1,15 @@
 import logging
 
+from allianceauth.services.tasks import QueueOnce
 from celery import shared_task
+
+# Every task runs through Alliance Auth's QueueOnce: while one run is queued or
+# running, a second one with the same keys is dropped quietly ('graceful')
+# instead of running alongside it — a double click, a second schedule entry or
+# a signal firing twice can no longer make two runs overlap. The keys say what
+# counts as "the same run": the rebuild per month, a character sync per
+# character, everything else once at a time. The long nightly and rebuild runs
+# hold their lock for up to four hours instead of the default one.
 
 from .services import (
     sync_all_characters, sync_all_corp_observers, update_market_prices,
@@ -12,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Daily sync: personal ledgers + corp observer + market prices + sovereignty
 # + billing records + payment check
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': [], 'timeout': 60 * 60 * 4})
 def daily_mining_sync_task():
     from .billing import months_to_recalculate, save_billing_records_for_month
     from .payments import check_open_payments
@@ -70,7 +79,7 @@ def daily_mining_sync_task():
 
 
 # Triggered when a new character registers in Alliance Auth
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': ['character_id']})
 def sync_character_mining_task(character_id):
     """Syncs the mining ledger of a single character asynchronously."""
     try:
@@ -89,7 +98,7 @@ def sync_character_mining_task(character_id):
 
 # Triggered by the "Sync Now" button — runs in the background so the request
 # doesn't time out on large datasets.
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': ['user_id']})
 def manual_sync_task(user_id):
     from django.contrib.auth.models import User
 
@@ -124,7 +133,7 @@ def manual_sync_task(user_id):
 
 
 # Triggered by the "Check Payments Now" button — runs in the background.
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': []})
 def check_payments_task(year=None, month=None, requested_by=None):
     """
     Backs "Check Payments Now": checks every month whose payment code is out
@@ -153,7 +162,7 @@ def check_payments_task(year=None, month=None, requested_by=None):
 # there is no record of it having run, by whom, or whether it finished.
 
 
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': []})
 def sync_sov_systems_task(requested_by=None):
     """Refreshes the known systems list. Backs the Systems tab button."""
     from .services import sync_sov_systems
@@ -164,7 +173,7 @@ def sync_sov_systems_task(requested_by=None):
     return result
 
 
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': []})
 def sync_ore_categories_task(requested_by=None):
     """Imports the ore list from ESI. Backs the Tax Rates tab button."""
     from .services import sync_ore_categories
@@ -175,7 +184,7 @@ def sync_ore_categories_task(requested_by=None):
     return result
 
 
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': []})
 def repair_location_names_task(requested_by=None):
     """Re-resolves placeholder locations. Backs the Systems tab button."""
     from .services import repair_unresolved_ledger_names
@@ -186,7 +195,7 @@ def repair_location_names_task(requested_by=None):
     return result
 
 
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': []})
 def update_prices_task(requested_by=None):
     """Prices entries that have none. Backs the Pricing tab button."""
     from .services import update_market_prices
@@ -197,7 +206,7 @@ def update_prices_task(requested_by=None):
     return result
 
 
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': ['corporation_id']})
 def register_corporation_task(corporation_id, requested_by=None):
     """
     Registers one corporation with Alliance Auth. Backs the Settings button.
@@ -221,7 +230,7 @@ def register_corporation_task(corporation_id, requested_by=None):
     return f'registered {corp.corporation_name}'
 
 
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': ['alliance_id']})
 def register_alliance_corps_task(alliance_id, requested_by=None):
     """
     Registers every corporation of an alliance through Alliance Auth's own
@@ -253,7 +262,7 @@ def register_alliance_corps_task(alliance_id, requested_by=None):
     return result
 
 
-@shared_task
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': ['year', 'month'], 'timeout': 60 * 60 * 4})
 def rebuild_billing_snapshot_task(year, month, requested_by=None):
     """
     Rebuilds the AllianceBillingRecord snapshot (totals, category breakdown,

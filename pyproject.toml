@@ -59,6 +59,11 @@ eveuniverse = [
     "django-eveuniverse",
 ]
 
+# For running the test suite (tests/ — not part of the installed package).
+test = [
+    "pytest",
+    "pypdf",
+]
 [project.urls]
 Homepage = "https://github.com/Zer0C0ol1337/aa-miningtax"
 Changelog = "https://github.com/Zer0C0ol1337/aa-miningtax/blob/main/CHANGELOG.md"
@@ -69,3 +74,6 @@ version.path = "miningtax/__init__.py"
 build.include = [
     "/miningtax",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

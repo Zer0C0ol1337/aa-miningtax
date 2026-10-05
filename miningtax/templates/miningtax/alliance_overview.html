@@ -13,21 +13,30 @@
         <h1>🏛️ {% trans "Alliance Billing" %} — {{ month }}/{{ year }}{% if month_frozen %} <span class="badge text-bg-secondary fs-6 align-middle" title="{% trans "The payment code for this month has been released. Its invoices are final and can no longer be recalculated." %}">🔒 {% trans "Final" %}</span>{% endif %}</h1>
         <div class="d-flex gap-2">
             {% if is_full_officer %}
-            <a href="{% url 'miningtax:check_payments_now' %}?year={{ year }}&month={{ month }}"
-               class="btn btn-sm btn-outline-primary">
-                💰 {% trans "Check Payments Now" %}
-            </a>
+            {# POST with CSRF token: a plain link could be triggered by any page an officer opens. #}
+            <form method="post" action="{% url 'miningtax:check_payments_now' %}" class="d-inline">
+                {% csrf_token %}
+                <input type="hidden" name="year" value="{{ year }}">
+                <input type="hidden" name="month" value="{{ month }}">
+                <button type="submit" class="btn btn-sm btn-outline-primary">
+                    💰 {% trans "Check Payments Now" %}
+                </button>
+            </form>
             {% comment %}
               Rebuilds the snapshot for the month being viewed — only offered
               while the month isn't final. Once its payment code is released
               the invoices must not change (the server refuses it as well).
             {% endcomment %}
             {% if not month_frozen %}
-            <a href="{% url 'miningtax:rebuild_billing_snapshot' %}?year={{ year }}&month={{ month }}"
-               class="btn btn-sm btn-outline-warning"
-               onclick="return confirm('{% trans "Rebuild the billing snapshot for" %} {{ month }}/{{ year }}? {% trans "Paid records are left untouched." %}')">
-                🔄 {% trans "Rebuild Snapshot" %}
-            </a>
+            <form method="post" action="{% url 'miningtax:rebuild_billing_snapshot' %}" class="d-inline"
+                  onsubmit="return confirm('{% trans "Rebuild the billing snapshot for" %} {{ month }}/{{ year }}? {% trans "Paid records are left untouched." %}')">
+                {% csrf_token %}
+                <input type="hidden" name="year" value="{{ year }}">
+                <input type="hidden" name="month" value="{{ month }}">
+                <button type="submit" class="btn btn-sm btn-outline-warning">
+                    🔄 {% trans "Rebuild Snapshot" %}
+                </button>
+            </form>
             {% endif %}
             <a href="{% url 'miningtax:download_all_corps_zip' %}?year={{ year }}&month={{ month }}"
                class="btn btn-sm btn-outline-success">

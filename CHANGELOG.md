@@ -1,6 +1,27 @@
 # Changelog
 
 
+## [0.10.26] - 2026-10-05
+
+Fixes the findings of the AA App Checklist review of 0.10.25.
+
+### Changed
+- **The plugin no longer creates its own periodic task.** It used to add *miningtax: daily mining sync* on every `migrate`; an app must not create tasks on its own, and together with a `local.py` entry — which the README offered — the sync ran twice every night. The `local.py` entry is now the only way to schedule it. **On upgrade:** keep exactly one schedule for `miningtax.tasks.daily_mining_sync_task` in Admin → Periodic Tasks (README → Celery Beat)
+- **Every Celery task runs through Alliance Auth's `QueueOnce`.** While a run is queued or running, a second one is dropped instead of running alongside it — per month for Rebuild Snapshot, per character for a character sync, once at a time for the rest. A double click or a duplicate schedule can no longer make two runs overlap; the confirmation messages say so
+- **Invoices are read-only in the Django admin.** Amounts and the paid flag could be edited there, bypassing the month freeze and the log of manual changes; invoices now change only through the billing page and its tasks
+- **The Janice API key is a password field** that never shows the saved key; leaving it empty keeps it
+
+### Security
+- **Sync Now, Check Payments Now, Rebuild Snapshot and Sync Sovereignty require a POST with a CSRF token.** They also accepted a plain GET, so a link or image opened by a logged-in officer could trigger them — Rebuild Snapshot recalculates the open invoices of a non-final month. Check Payments Now and Rebuild Snapshot were links and are buttons in forms now
+
+### Added
+- **Test suite** (`tests/`, 30 tests — payment codes, whole-ISK rounding, number formatting, migration 0027, model/migration consistency, stored join dates) and a **GitHub Actions workflow** that runs it on every push. Plain Django only, no Alliance Auth needed; the tests are not part of the installed package, and the empty `miningtax/tests.py` is gone
+- README: **Upgrading, Uninstalling and Data Protection** sections; the schedule as an installation step
+
+### Fixed
+- README claims that no longer matched the code: a `local.py` schedule "taking precedence" (both ran), moons and structures coming from ESI (local data comes first), staff users having full access (only superusers do), Sync Now being open to every pilot (officers only), and a URL overview listing a removed endpoint
+
+
 ## [0.10.25] - 2026-10-05
 
 ### Fixed

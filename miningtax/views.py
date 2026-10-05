@@ -3,6 +3,7 @@ import traceback
 from datetime import date, timedelta
 
 from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.core.exceptions import PermissionDenied
@@ -250,6 +251,7 @@ def dashboard(request):
 
 
 @check_access(has_full_officer_access)
+@require_POST
 def sync_now(request):
     # Refreshing every corporation's observers is an alliance-wide operation,
     # so it sits with the other alliance-wide actions behind the real
@@ -263,7 +265,7 @@ def sync_now(request):
     messages.success(
         request,
         '✅ Sync started in the background. This may take a few minutes for large corps — '
-        'check the log or refresh this page shortly.'
+        'check the log or refresh this page shortly. If one is already running, that one continues and no second one is started.'
     )
     return redirect('miningtax:dashboard')
 
@@ -542,11 +544,12 @@ def mark_unpaid(request, corp_id):
 
 
 @check_access(has_full_officer_access)
+@require_POST
 def check_payments_now(request):
     from .tasks import check_payments_task
 
-    year = int(request.GET.get('year', date.today().year))
-    month = int(request.GET.get('month', date.today().month))
+    year = int(request.POST.get('year', date.today().year))
+    month = int(request.POST.get('month', date.today().month))
 
     # Checks every month whose payment code is out and that still has open
     # invoices — not just the month on screen. The page opens on the running
@@ -558,12 +561,13 @@ def check_payments_now(request):
     messages.success(
         request,
         '✅ Payment check started in the background for every month with open '
-        'invoices — refresh this page shortly for results.'
+        'invoices — refresh this page shortly for results. If one is already running, that one continues and no second one is started.'
     )
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
 
 @check_access(has_full_officer_access)
+@require_POST
 def rebuild_billing_snapshot(request):
     """
     Rebuilds the billing snapshot for a given month as a background task.
@@ -575,8 +579,8 @@ def rebuild_billing_snapshot(request):
     """
     from .tasks import rebuild_billing_snapshot_task
 
-    year = int(request.GET.get('year', date.today().year))
-    month = int(request.GET.get('month', date.today().month))
+    year = int(request.POST.get('year', date.today().year))
+    month = int(request.POST.get('month', date.today().month))
 
     if is_month_frozen(year, month):
         messages.error(
@@ -592,7 +596,7 @@ def rebuild_billing_snapshot(request):
     messages.success(
         request,
         f'✅ Rebuilding the billing snapshot for {month:02d}/{year} in the '
-        f'background — check the task monitor or refresh this page shortly.'
+        f'background — check the task monitor or refresh this page shortly. If one is already running, that one continues and no second one is started.'
     )
     return redirect(f"{reverse('miningtax:alliance_overview')}?year={year}&month={month}")
 
@@ -1047,6 +1051,7 @@ def settings_delete_sov_filter(request, pk):
 
 
 @check_access(has_full_officer_access)
+@require_POST
 def settings_sync_sov_now(request):
     from .tasks import sync_sov_systems_task
 
@@ -1055,7 +1060,7 @@ def settings_sync_sov_now(request):
     messages.success(
         request,
         '✅ Sovereignty sync started. It runs in the background — '
-        'refresh shortly, or watch it in the task monitor.'
+        'refresh shortly, or watch it in the task monitor. If one is already running, that one continues and no second one is started.'
     )
     return redirect('miningtax:settings')
 

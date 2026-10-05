@@ -1,0 +1,24 @@
+# Runs the test suite on every push and pull request. The tests need plain
+# Django only (see tests/conftest.py), so no Alliance Auth, database server or
+# Celery is set up here.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: pip install "django>=5.2,<6" reportlab pypdf pytest
+      - name: Run tests
+        run: python -m pytest -q
