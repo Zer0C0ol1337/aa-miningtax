@@ -1,6 +1,20 @@
 # Changelog
 
 
+## [0.10.24] - 2026-10-05
+
+### Fixed
+- **Corps sorted to the end of Alliance Billing as "join date unknown" although their date is known — an alliance's founding corp among them.** Join dates were only looked up for corps in the months being recalculated, and only kept in a one-day cache, so a corp that hadn't mined in the running month, or only pays rent, had no date for the final months shown on the page
+
+### Changed
+- **Alliance join dates are stored in the database and fetched from ESI once per corp, instead of being cached for a day.** Neither Corptools nor Alliance Auth keep this date — Alliance Auth only stores a corp's founding date and current alliance — so ESI is the only source. The date practically never changes, though: it is looked up when a corp first gets an invoice, and again only when Alliance Auth shows the corp in a different alliance. On an ordinary night this costs no ESI call at all, and the tax check — which asks once per mining entry — reads it from the database too
+- The nightly run makes sure every corp with an invoice in any month has its date stored; Rebuild Snapshot does the same, so the order is complete right away. The billing page still never calls ESI
+- A failed lookup is retried after six hours at the earliest (and on the next nightly run), instead of being remembered as "unknown" for a whole day
+
+### Database
+- New table `CorpAllianceJoin` (migration `0026_corpalliancejoin`). Run `migrate` after updating; the first nightly run or Rebuild Snapshot fills it
+
+
 ## [0.10.23] - 2026-10-04
 
 ### Changed

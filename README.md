@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.23**
+**Version 0.10.24**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 

@@ -482,3 +482,28 @@ class TaxableScope(models.Model):
         if self.corporation:
             return f'Corporation: {self.corporation.corporation_name}'
         return 'Incomplete scope'
+
+
+class CorpAllianceJoin(models.Model):
+    """
+    When a corporation joined its current alliance, read once from ESI's
+    alliance history and kept here.
+
+    Neither Corptools nor Alliance Auth store this date (Alliance Auth only
+    keeps the corp's founding date and its current alliance), so ESI is the
+    only source. It practically never changes, though, so it is fetched once
+    per corp and only fetched again when Alliance Auth reports the corp in a
+    different alliance than the one stored here.
+
+    Plain EVE IDs rather than foreign keys, so a corp Alliance Auth doesn't
+    know yet can still be stored.
+    """
+    corporation_id = models.BigIntegerField(unique=True)
+    # The alliance the date refers to — compared against the corp's current
+    # alliance in Alliance Auth to notice a switch. None: not in an alliance.
+    alliance_id = models.BigIntegerField(null=True, blank=True)
+    joined = models.DateField(null=True, blank=True)
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.corporation_id} joined {self.alliance_id} on {self.joined}'

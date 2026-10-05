@@ -523,44 +523,60 @@ def is_excluded_by_moon_rental(entry, corporation):
     return bool(rented) and entry.solar_system_name.strip().lower() in rented
 
 
-# One day: a corp's alliance join date changes only on an actual alliance
-# switch, which is rare and noticed immediately by an officer if it matters —
-# unlike the 60-second billing caches above, which exist to survive a burst of
-# page views, not to track something that moves this slowly.
-CORP_JOIN_DATE_CACHE_TTL = 60 * 60 * 24
+# The join date itself is stored in CorpAllianceJoin (see there for why). This
+# cache only sits in front of that table: the tax check asks once per mining
+# entry, and thousands of entries shouldn't mean thousands of queries.
+CORP_JOIN_DATE_CACHE_TTL = 60 * 60
+
+# After an ESI failure, how long before the same corp is tried again. Without
+# it every mining entry of that corp retried the same failing call — one
+# alliance with a few thousand entries turned one bad endpoint into a few
+# thousand identical warnings inside minutes.
+CORP_JOIN_DATE_RETRY_TTL = 60 * 60 * 6
 
 
-def get_corp_join_date(corporation_id):
+def _corp_join_cache_key(corporation_id):
+    """Cache key for a corp's join date in front of CorpAllianceJoin."""
+    return f'miningtax:corp_join_date:{corporation_id}'
+
+
+def _corp_join_failed_key(corporation_id):
+    """Cache key marking a recent failed ESI lookup for a corp."""
+    return f'miningtax:corp_join_date_failed:{corporation_id}'
+
+
+def _stored_join_is_current(row):
     """
-    The date the corporation joined its CURRENT alliance, or None if that
-    can't be determined (not in an alliance, ESI unreachable, or the corp has
-    never been in one).
-
-    Reads /corporations/{id}/alliancehistory/ — public, no token needed. ESI
-    has changed this endpoint's shape between versions: v1 nests alliance_id
-    under an "alliance" sub-object, v2 has it at the top level. Both are
-    handled here rather than pinning a version, since django-esi resolves
-    "latest" for public endpoints and which one comes back isn't something
-    this code controls.
-
-    The current alliance's row is the one with the highest record_id — ESI
-    documents record_id specifically as the field to use when dates might be
-    ambiguous, rather than trusting start_date/is_deleted ordering.
-
-    Returns None on any failure. A join date this function can't determine is
-    treated as "not applicable" by the caller, which means the mining is
-    taxed rather than exempted — the same reasoning is_corp_outside_taxable_
-    scope() applies to an unconfirmable corp: of the two ways to be wrong,
-    quietly not taxing a corp that should be taxed is the one people notice
-    and resent, so an unknown answer defaults to taxing.
+    True when a stored join date still applies: Alliance Auth has the corp in
+    the same alliance the date was recorded for. A corp Alliance Auth doesn't
+    know can't be checked, so its stored date is trusted rather than refetched
+    on every call.
     """
-    cache_key = f'miningtax:corp_join_date:{corporation_id}'
-    cached = cache.get(cache_key)
-    if cached is not None:
-        # cache.get can't distinguish "not cached" from "cached as None", so a
-        # sentinel string stands in for the negative result.
-        return None if cached == 'none' else cached
+    from allianceauth.eveonline.models import EveCorporationInfo
 
+    corp = EveCorporationInfo.objects.filter(
+        corporation_id=row.corporation_id
+    ).select_related('alliance').first()
+    if corp is None:
+        return True
+    current = corp.alliance.alliance_id if corp.alliance_id else None
+    return row.alliance_id == current
+
+
+def _fetch_corp_join_date_from_esi(corporation_id):
+    """
+    Reads /corporations/{id}/alliancehistory/ — public, no token needed — and
+    returns (ok, join_date, alliance_id). ok is False only when ESI couldn't
+    be asked; "not in an alliance" or an empty history is a real answer
+    (ok=True, None, None).
+
+    ESI has changed this endpoint's shape between versions: v1 nests
+    alliance_id under an "alliance" sub-object, v2 has it at the top level.
+    Both are handled rather than pinning a version, since django-esi resolves
+    "latest" for public endpoints. The current alliance's row is the one with
+    the highest record_id — ESI documents record_id specifically as the field
+    to use when dates might be ambiguous.
+    """
     from .services import _get_esi_client
     from esi.exceptions import HTTPNotModified
 
@@ -577,19 +593,8 @@ def get_corp_join_date(corporation_id):
         except HTTPNotModified:
             history = _fetch(force=True)
     except Exception as e:
-        # Cached the same as a genuine "no history" result (not a short retry
-        # window): a broken or missing ESI operation does not fix itself
-        # between one ledger entry and the next, so without this every entry
-        # for the corp re-attempted the same failing call — one alliance with
-        # a few thousand entries in a month turned one bad endpoint into a
-        # few thousand near-identical warnings inside minutes.
         logger.warning(f'Could not fetch alliance history for corp {corporation_id}: {e}')
-        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
-        return None
-
-    if not history:
-        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
-        return None
+        return False, None, None
 
     def _row_alliance_id(row):
         # v1 nests it under .alliance.alliance_id, v2 puts it directly on the
@@ -600,38 +605,82 @@ def get_corp_join_date(corporation_id):
         return getattr(row, 'alliance_id', None)
 
     current = max(
-        (row for row in history if _row_alliance_id(row)),
+        (row for row in (history or []) if _row_alliance_id(row)),
         key=lambda row: getattr(row, 'record_id', 0),
         default=None,
     )
-
     if current is None:
-        # Every row in the history is a departure with no alliance (is_deleted
-        # rows, or gaps between alliances) — the corp is not currently in one.
-        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
-        return None
+        # No history, or every row is a departure with no alliance — the corp
+        # is not currently in one.
+        return True, None, None
 
     start_date = getattr(current, 'start_date', None)
     if start_date is None:
-        cache.set(cache_key, 'none', CORP_JOIN_DATE_CACHE_TTL)
-        return None
-
+        return True, None, _row_alliance_id(current)
     join_date = start_date.date() if hasattr(start_date, 'date') else start_date
-    cache.set(cache_key, join_date, CORP_JOIN_DATE_CACHE_TTL)
-    return join_date
+    return True, join_date, _row_alliance_id(current)
 
 
-def cached_corp_join_date(corporation_id):
+def get_corp_join_date(corporation_id):
     """
-    A corp's alliance join date from the cache only, or None if it isn't
-    cached yet (or is known to be unknown). Never calls ESI — it serves the
-    billing page's sort order, and a page must not wait on ESI. The nightly
-    sync and Rebuild Snapshot keep it filled (see save_billing_records_for_month()).
+    The date the corporation joined its CURRENT alliance, or None if that
+    can't be determined (not in an alliance, ESI unreachable, or the corp has
+    never been in one).
+
+    Read from CorpAllianceJoin; ESI is asked only when no date is stored yet
+    or Alliance Auth shows the corp in a different alliance than the stored
+    one — normally once per corp, ever. Neither Corptools nor Alliance Auth
+    keep this date, so there is no local source to try first.
+
+    Returns None on any failure. A join date this function can't determine is
+    treated as "not applicable" by the caller, which means the mining is
+    taxed rather than exempted — the same reasoning is_corp_outside_taxable_
+    scope() applies to an unconfirmable corp: of the two ways to be wrong,
+    quietly not taxing a corp that should be taxed is the one people notice
+    and resent, so an unknown answer defaults to taxing.
     """
-    cached = cache.get(f'miningtax:corp_join_date:{corporation_id}')
-    if cached is None or cached == 'none':
-        return None
-    return cached
+    from .models import CorpAllianceJoin
+
+    key = _corp_join_cache_key(corporation_id)
+    cached = cache.get(key)
+    if cached is not None:
+        # cache.get can't distinguish "not cached" from "cached as None", so a
+        # sentinel string stands in for the negative result.
+        return None if cached == 'none' else cached
+
+    row = CorpAllianceJoin.objects.filter(corporation_id=corporation_id).first()
+    if row is not None and _stored_join_is_current(row):
+        cache.set(key, row.joined or 'none', CORP_JOIN_DATE_CACHE_TTL)
+        return row.joined
+
+    if cache.get(_corp_join_failed_key(corporation_id)):
+        return row.joined if row is not None else None
+
+    ok, joined, alliance_id = _fetch_corp_join_date_from_esi(corporation_id)
+    if not ok:
+        cache.set(_corp_join_failed_key(corporation_id), True, CORP_JOIN_DATE_RETRY_TTL)
+        return row.joined if row is not None else None
+
+    CorpAllianceJoin.objects.update_or_create(
+        corporation_id=corporation_id,
+        defaults={'alliance_id': alliance_id, 'joined': joined},
+    )
+    cache.set(key, joined or 'none', CORP_JOIN_DATE_CACHE_TTL)
+    return joined
+
+
+def stored_corp_join_date(corporation_id):
+    """
+    A corp's alliance join date as stored, or None if none is stored yet.
+    Never calls ESI — it serves the billing page's sort order, and a page must
+    not wait on ESI. refresh_corp_join_dates() fills it, nightly and on
+    Rebuild Snapshot.
+    """
+    from .models import CorpAllianceJoin
+
+    return CorpAllianceJoin.objects.filter(
+        corporation_id=corporation_id
+    ).values_list('joined', flat=True).first()
 
 
 def is_before_corp_join_date(entry, corporation):
@@ -1197,17 +1246,39 @@ def save_billing_records_for_month(year, month):
         if record:
             saved += 1
 
-    # Keeps every billed corp's alliance join date cached for the billing
-    # page's sort order. Corps that only pay rent are otherwise never looked
-    # up, because only mining triggers the join-date check. At most one ESI
-    # call per corp per day (the result is cached), and only here in the
-    # task — never while a page loads.
-    for corp_id in AllianceBillingRecord.objects.filter(
-        year=year, month=month
-    ).values_list('corporation__corporation_id', flat=True):
-        get_corp_join_date(corp_id)
-
     return saved
+
+
+def refresh_corp_join_dates():
+    """
+    Makes sure every corporation with an invoice in any month has its alliance
+    join date stored, for the billing page's sort order. Only corps with no
+    stored date yet, or whose alliance changed since, are looked up — normally
+    none, so this costs no ESI call at all on an ordinary night. A lookup that
+    failed recently is retried here regardless. Returns how many corps were
+    looked up.
+
+    Every billed corp, not only those of the months being recalculated: the
+    page also shows final months, and a corp that hasn't mined in the running
+    month, or only pays rent, would otherwise never be looked up.
+    """
+    from .models import CorpAllianceJoin
+
+    corp_ids = set(
+        AllianceBillingRecord.objects.values_list('corporation__corporation_id', flat=True)
+    )
+    stored = {row.corporation_id: row for row in CorpAllianceJoin.objects.filter(corporation_id__in=corp_ids)}
+
+    looked_up = 0
+    for corp_id in corp_ids:
+        row = stored.get(corp_id)
+        if row is not None and _stored_join_is_current(row):
+            continue
+        cache.delete(_corp_join_cache_key(corp_id))
+        cache.delete(_corp_join_failed_key(corp_id))
+        get_corp_join_date(corp_id)
+        looked_up += 1
+    return looked_up
 
 
 def save_billing_record(corp_id, corp_data, year, month):

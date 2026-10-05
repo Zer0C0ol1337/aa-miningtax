@@ -46,6 +46,12 @@ def daily_mining_sync_task():
     for year, month in months:
         billing_saved += save_billing_records_for_month(year, month)
 
+    # Join dates for the billing page's sort order — looks up only corps that
+    # have none stored yet or changed alliance, normally none.
+    from .billing import refresh_corp_join_dates
+    join_dates = refresh_corp_join_dates()
+    logger.debug(f'Alliance join dates looked up for {join_dates} corp(s) without a current stored date')
+
     # Every month whose payment code is out and that still has open invoices.
     payments_matched = check_open_payments()
 
@@ -281,6 +287,11 @@ def rebuild_billing_snapshot_task(year, month, requested_by=None):
     unpaid_deleted, _ = existing.filter(paid=False).delete()
 
     saved = save_billing_records_for_month(year, month)
+
+    # Fill the join dates right away too, so the new sort order is complete
+    # without waiting for the nightly run.
+    from .billing import refresh_corp_join_dates
+    refresh_corp_join_dates()
 
     result = (
         f'{saved} record(s) rebuilt for {month:02d}/{year} '
