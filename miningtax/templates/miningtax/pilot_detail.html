@@ -240,7 +240,7 @@
           {% for category, data in per_category.items %}
           <tr>
             <td><span class="badge bg-info text-dark">{{ category }}</span></td>
-            <td>{{ data.rate }}%</td>
+            <td>{{ data.rate|rate }}%</td>
             <td>{{ data.value|isk }} ISK</td>
             <td>{{ data.tax|isk }} ISK</td>
           </tr>

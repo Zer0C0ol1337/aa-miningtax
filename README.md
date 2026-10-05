@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.24**
+**Version 0.10.25**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -21,7 +21,7 @@ A Django app for Alliance Auth to manage EVE Online mining tax billing across al
 - **PDF invoices** — per-corp invoice or all corps as a ZIP
 - **Corp Observer sync** — a director/CEO token pulls mining data for all moons/structures of a corp, covering members who never log in to Alliance Auth themselves
 - **Local data first** — mining ledgers, wallet journals, corp history, structures and sovereignty come from Corptools; ore types, systems and moons from eve_sde (shipped with Corptools 3.4) or eveuniverse; ESI is asked only for what none of them has (see [Data from Other Apps](#data-from-other-apps))
-- **Automatic payment verification** — checks a configured treasury corp's wallet journal for incoming tax payments (exact per-corp payment code + amount + sender corp) and marks invoices as paid automatically; the required payment reason is shown with a one-click copy button
+- **Automatic payment verification** — checks a configured treasury corp's wallet journal for incoming tax payments (exact per-corp payment code + at least the amount due, from whoever sends it) and marks invoices as paid automatically; the required payment reason is shown with a one-click copy button
 - **Manual override** — mark/unmark an invoice as paid at any time
 - **Open-invoice badge in the sidebar** — the Mining Tax menu entry shows how many issued invoices are still unpaid: a corp billing holder sees their own corporation's, a mining officer the whole alliance's. An invoice counts once its payment code is revealed and until it is paid; the running month never counts. An optional start month (Settings → Payment Code Timing) leaves out invoices from before billing was enforced
 - **Corp-scoped billing access** — the `corp_billing` permission gives read-only billing for the holder's own corporation only (based on their main character's corporation); no automatic access is granted based on in-game CEO status. Full Settings and alliance-wide actions still require the `mining_officer` permission

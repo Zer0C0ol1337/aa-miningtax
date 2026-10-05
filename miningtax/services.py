@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+from .amounts import whole_isk_nearest
 from .models import MiningLedgerEntry, OreCategory
 
 logger = logging.getLogger(__name__)
@@ -771,7 +772,7 @@ def update_market_prices():
             billable_qty = (entry.quantity // portion) * portion
 
         entry.price_per_unit = price
-        entry.total_value = price * billable_qty
+        entry.total_value = whole_isk_nearest(price * billable_qty)
         entry.save(update_fields=['price_per_unit', 'total_value'])
         updated += 1
 

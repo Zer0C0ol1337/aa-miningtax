@@ -5,6 +5,7 @@ from django.core.cache import cache
 from django.db.models import Sum
 from django.utils import timezone
 
+from .amounts import whole_isk_down, whole_isk_nearest
 from .models import (
     OreCategory, TaxRate, TaxRateHistory, FleetSession, AllianceMoon, MoonRental,
     AllianceBillingRecord, TaxExemption, OreCategoryRule, TaxableScope,
@@ -1292,9 +1293,14 @@ def save_billing_record(corp_id, corp_data, year, month):
 
     rental_total = MoonRental.objects.filter(
         corporation=corp_obj, active=True
-    ).aggregate(total=Sum('monthly_fee'))['total'] or Decimal('0')
+    ).aggregate(total=Sum('monthly_fee'))['total'] or 0
 
-    total_due = corp_data['total_tax'] + rental_total
+    # Whole ISK: tax and rental rounded down, due their sum — never more than
+    # the exact amount, so a transfer of the exact figure is always enough.
+    mined = whole_isk_nearest(corp_data['total_mined'])
+    tax = whole_isk_down(corp_data['total_tax'])
+    rental_total = whole_isk_down(rental_total)
+    total_due = tax + rental_total
 
     category_snapshot = {
         cat: {
@@ -1311,8 +1317,8 @@ def save_billing_record(corp_id, corp_data, year, month):
         month=month,
         year=year,
         defaults={
-            'total_mined_value': corp_data['total_mined'],
-            'mining_tax_amount': corp_data['total_tax'],
+            'total_mined_value': mined,
+            'mining_tax_amount': tax,
             'moon_rental_total': rental_total,
             'total_due': total_due,
             'category_snapshot': category_snapshot,
@@ -1321,8 +1327,8 @@ def save_billing_record(corp_id, corp_data, year, month):
     )
 
     if not created and not record.paid:
-        record.total_mined_value = corp_data['total_mined']
-        record.mining_tax_amount = corp_data['total_tax']
+        record.total_mined_value = mined
+        record.mining_tax_amount = tax
         record.moon_rental_total = rental_total
         record.total_due = total_due
         record.category_snapshot = category_snapshot

@@ -32,6 +32,9 @@ from .views import (
 )
 
 
+from .templatetags.miningtax_tags import format_rate, whole_isk
+
+
 def _csv_response(filename, rows):
     """
     Writes rows to a downloadable CSV.
@@ -52,10 +55,17 @@ def _csv_response(filename, rows):
 
 
 def _fmt(value):
-    """Plain decimal string — no thousands separators, so it stays a number."""
-    if isinstance(value, Decimal):
-        return f'{value:.2f}'
-    return value
+    """
+    An ISK amount as a plain whole number — no separators, so a spreadsheet
+    still reads it as a number, and the same rounded-up figure the pages and
+    the PDF show.
+    """
+    return whole_isk(value)
+
+
+def _fmt_rate(value):
+    """A tax rate without trailing zeros (7.00 → 7, 7.50 → 7.5)."""
+    return format_rate(value)
 
 
 def _ledger_rows(entries):
@@ -76,7 +86,7 @@ def _ledger_rows(entries):
             info['category'],
             entry.quantity,
             _fmt(entry.total_value),
-            _fmt(info['tax_rate']),
+            _fmt_rate(info['tax_rate']),
             _fmt(info['tax_amount']),
             'yes' if info['excluded'] else 'no',
         ]
@@ -179,7 +189,7 @@ def export_alliance_billing(request):
             for category, values in corp['categories'].items():
                 yield [
                     category,
-                    _fmt(values['rate']),
+                    _fmt_rate(values['rate']),
                     _fmt(values['value']),
                     _fmt(values['tax']),
                 ]

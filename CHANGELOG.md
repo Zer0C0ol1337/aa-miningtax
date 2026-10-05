@@ -1,6 +1,26 @@
 # Changelog
 
 
+## [0.10.25] - 2026-10-05
+
+### Fixed
+- **A correct payment was not recognised when the month in the reason had no leading zero.** A corp paying with the reason `98806948/9/2026` instead of `98806948/09/2026` paid the right amount for the right month, but the reason was compared character by character and never matched. Payment codes are now read as numbers — corp, month, year — so `9` and `09` are the same month and spaces around the slashes don't matter
+- **Full-width characters from Chinese input methods** (`／` instead of `/`, `９` instead of `9`) are converted to normal ones before reading the code, so a payment typed that way is recognised too
+- **A corp typed "45.142 ISK" (forty-five thousand) into an EVE client that reads the dot as a decimal point — and transferred 45.14 ISK.** The payment box now shows the amount to transfer as bare digits with its own copy button (see Added), so nobody has to type it over. Pages and PDF show whole ISK with dots between the thousands groups — `45.141 ISK` — with no decimals, so a dot is never a decimal point; the PDF used commas and cents before. The CSV writes plain digits, so a spreadsheet still reads them as numbers
+
+### Changed
+- **A payment no longer has to come from the corp's own wallet.** The payment code alone names the corp and the month, so the code plus at least the amount due is enough — a CEO paying from his own character, or a member paying for the corp, is recognised like a transfer from the corp wallet. Paying more than is due is still accepted; less is not. The reason must still be exactly this corp's code for this month with nothing else in it, so a payment is never matched to the wrong invoice
+- **ISK amounts are stored as whole numbers (BigInteger) instead of decimals:** a mining entry's value, moon rental fees, and the mined total, tax, rental and due of every invoice. What a corp pays — tax, rental, due — is rounded **down**, and the due is the sum of the rounded tax and rental; other values are rounded to the nearest whole ISK. Unit prices and tax rates keep their decimals — a unit price of 13.5 ISK rounded to 14 would overvalue every unit by almost 4 %, and a rate of 7.5 % has to stay 7.5
+- **What is shown is exactly what is stored.** Pages, PDF and CSV show the same whole-ISK figures, computed with Decimal instead of float. Breakdown lines, such as the tax per member, are rounded down as well, so they never add up to more than the total due
+- **Tax rates are shown without trailing zeros** — `7%` instead of `7.00%` — on the pages, in the PDF and in the CSV. They are not rounded: 7.5 % stays `7.5%`
+
+### Added
+- **"Amount to transfer" next to the payment code, with its own copy button.** Shown with dots for reading (`45.141`), but the button copies bare digits (`45141`), so it pastes into EVE's transfer field unchanged in any client language. The payment code and the amount — everything a transfer needs — now sit together, each one copyable
+
+### Database
+- **Migration `0027_whole_isk_amounts`** rounds the existing amounts by the rules above and converts the columns to BigInteger. Because every due is rounded down — by less than 1 ISK with whole rentals — it only ever gets smaller, never larger: **every payment that already covered an invoice still covers it afterwards**, including a transfer of the exact figure with cents as older PDFs showed it, so payments made but not yet recognised are still matched. Run `migrate` after updating
+
+
 ## [0.10.24] - 2026-10-05
 
 ### Fixed

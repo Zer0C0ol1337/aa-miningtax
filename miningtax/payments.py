@@ -1,9 +1,34 @@
 import logging
+import re
+import unicodedata
 from datetime import date
 
 from .models import TreasuryConfig, AllianceBillingRecord
 
 logger = logging.getLogger(__name__)
+
+
+# corp_id / month / year — digits only, optional spaces around the slashes.
+_PAYMENT_CODE_RE = re.compile(r'^\s*(\d+)\s*/\s*(\d{1,2})\s*/\s*(\d{4})\s*$')
+
+
+def parse_payment_code(reason):
+    """
+    Reads a transfer reason as a payment code and returns (corp_id, month,
+    year) as numbers, or None if the reason isn't one.
+
+    Compared as numbers rather than as text, so the way a pilot happens to
+    type it doesn't decide whether a payment is recognised: "9" and "09" are
+    the same month, spaces around the slashes don't matter, and full-width
+    characters from Chinese input methods ("／", "９") are turned into normal
+    ones first. Anything else in the reason — extra words, a second code —
+    still means it isn't a code, so a payment is never matched by accident.
+    """
+    text = unicodedata.normalize('NFKC', reason or '')
+    match = _PAYMENT_CODE_RE.match(text)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
 
 def payment_code_for(corp_id, month, year):
@@ -94,14 +119,18 @@ def _match_payments_against_journal(journal, year, month, open_records, source_l
     """
     The actual matching logic, shared between the Corptools path and the ESI
     path — both hand this the same shape of journal entries (objects with
-    .reason, .first_party_id, .amount), just sourced differently, so the
+    .reason and .amount), just sourced differently, so the
     matching rules only need to exist once.
 
-    Matches require the journal reason to be EXACTLY the per-corp code
-    "{corp_id}/{month}/{year}" (after stripping whitespace), not just a
-    substring — this rules out any ambiguity where one corp's code could
-    accidentally be contained within another string, plus amount + sender
-    corp are checked as before.
+    Matches require the journal reason to be exactly the per-corp code
+    "{corp_id}/{month}/{year}" — read as numbers by parse_payment_code(), so
+    "9" and "09" or a full-width slash don't make a correct payment fail —
+    never just a substring, so one corp's code can't be found inside another
+    string. The amount must be at least what is due — more is fine.
+
+    Who sends the transfer doesn't matter: the code alone names the corp and
+    the month, so a CEO paying from his own character, or a member paying for
+    the corp, is recognised just like a transfer from the corp wallet.
     """
     from django.utils import timezone
     from decimal import Decimal
@@ -112,11 +141,11 @@ def _match_payments_against_journal(journal, year, month, open_records, source_l
         paying_corp_id = record.corporation.corporation_id
         paying_corp_name = record.corporation.corporation_name
         expected_code = payment_code_for(paying_corp_id, month, year)
+        expected = (int(paying_corp_id), int(month), int(year))
 
         found = False
         for entry in journal:
-            reason = (getattr(entry, 'reason', '') or '').strip()
-            first_party_id = getattr(entry, 'first_party_id', None)
+            reason = getattr(entry, 'reason', '') or ''
             # Compared as Decimal on both sides, never mixed with float:
             # Corptools' own amount field is already a Decimal, ESI's is a
             # float — converting record.total_due (a Decimal) to float to
@@ -126,9 +155,7 @@ def _match_payments_against_journal(journal, year, month, open_records, source_l
             # this way (verified against a real case before shipping this).
             amount = Decimal(str(getattr(entry, 'amount', 0) or 0))
 
-            if reason != expected_code:
-                continue
-            if first_party_id != paying_corp_id:
+            if parse_payment_code(reason) != expected:
                 continue
             if amount < Decimal(str(record.total_due)):
                 continue
@@ -202,7 +229,7 @@ def check_corp_payments(year, month):
     Checks the wallet journals of ALL active treasury configs for incoming
     payments and matches them against open AllianceBillingRecord entries
     using the exact per-corp code "{corp_id}/{month}/{year}" in the reason
-    field, plus amount + sender corp.
+    field and an amount of at least what is due, whoever sent it.
     A billing record already matched in one treasury is not checked again
     in another.
     """

@@ -17,18 +17,20 @@ COLOR_MUTED     = colors.HexColor('#888888')
 COLOR_WHITE     = colors.white
 
 
+from .templatetags.miningtax_tags import format_rate, whole_isk
+
 def _format_isk(value, suffix=False):
     """
-    Formatiert einen Decimal-Wert mit Tausenderpunkten.
+    An ISK amount exactly as the billing page writes it: whole ISK, thousands
+    grouped with dots — "45.141" — so the invoice shows the same figure as the
+    page (see the isk template filter). Amounts are whole ISK, so a dot here is
+    never a decimal point.
 
-    Das " ISK" haengt standardmaessig NICHT mehr dran: die Spaltenueberschrift
-    sagt es bereits, und die vier Zeichen haben bei Milliardenbetraegen den
-    Ausschlag gegeben, ob der Wert noch in die Zelle passt.
+    " ISK" is not appended by default: the column header already says it,
+    and those four characters decided whether billion-sized values still fit
+    their cell.
     """
-    try:
-        text = f"{float(value):,.2f}"
-    except Exception:
-        text = "0.00"
+    text = f"{whole_isk(value):,}".replace(',', '.')
     return f"{text} ISK" if suffix else text
 
 
@@ -172,7 +174,7 @@ def generate_corp_invoice_pdf(corp_data, corp_name, month, year, moon_rentals=No
     for cat, data in sorted(corp_data['categories'].items()):
         cat_data.append([
             Paragraph(cat, style_cell),
-            f"{data['rate']}%",
+            f"{format_rate(data['rate'])}%",
             _format_isk(data['value']),
             _format_isk(data['tax']),
         ])

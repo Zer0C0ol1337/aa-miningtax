@@ -88,7 +88,7 @@ class MoonRentalForm(forms.ModelForm):
                 'list': 'known-structure-names',
                 'placeholder': 'Start typing to see known structures...',
             }),
-            'monthly_fee': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0'}),
+            'monthly_fee': forms.NumberInput(attrs={'class': 'form-control', 'step': '1', 'min': '0'}),
             'active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
 

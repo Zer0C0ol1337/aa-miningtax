@@ -175,16 +175,37 @@
 
                 {% if not corp.paid %}
                 {% if corp.payment_code %}
-                <div class="alert alert-secondary d-flex align-items-center justify-content-between py-2">
-                    <div>
-                        <i class="fas fa-wallet"></i>
-                        {% trans "Payment reason for this transfer:" %}
-                        <code id="payment-code-{{ corp_id }}" class="ms-1">{{ corp.payment_code }}</code>
+                {% comment %}
+                  Everything a corp needs for the transfer, each with its own
+                  copy button. The amount is shown with dots for reading, but
+                  the button copies it as bare digits (data-copy): that pastes
+                  into EVE's transfer field as-is in any client language,
+                  whereas a typed "45.142" became 45.14 ISK in a client that
+                  reads the dot as a decimal point.
+                {% endcomment %}
+                <div class="alert alert-secondary py-2">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div>
+                            <i class="fas fa-wallet"></i>
+                            {% trans "Payment reason for this transfer:" %}
+                            <code id="payment-code-{{ corp_id }}" class="ms-1">{{ corp.payment_code }}</code>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="copyById('payment-code-{{ corp_id }}')">
+                            <i class="fas fa-copy"></i> {% trans "Copy" %}
+                        </button>
                     </div>
-                    <button type="button" class="btn btn-sm btn-outline-secondary"
-                            onclick="copyPaymentCode('{{ corp_id }}')">
-                        <i class="fas fa-copy"></i> {% trans "Copy" %}
-                    </button>
+                    <div class="d-flex align-items-center justify-content-between mt-2">
+                        <div>
+                            <i class="fas fa-coins"></i>
+                            {% trans "Amount to transfer:" %}
+                            <code id="payment-amount-{{ corp_id }}" class="ms-1" data-copy="{{ corp.total_due|isk_plain }}">{{ corp.total_due|isk }}</code> ISK
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="copyById('payment-amount-{{ corp_id }}')">
+                            <i class="fas fa-copy"></i> {% trans "Copy" %}
+                        </button>
+                    </div>
                 </div>
                 {% else %}
                 <div class="alert alert-light text-muted py-2 small">
@@ -228,7 +249,7 @@
                         {% for cat, data in corp.categories.items %}
                         <tr>
                             <td>{{ cat }}</td>
-                            <td>{{ data.rate }}%</td>
+                            <td>{{ data.rate|rate }}%</td>
                             <td>{{ data.value|isk }} ISK</td>
                             <td>{{ data.tax|isk }} ISK</td>
                         </tr>
@@ -275,9 +296,12 @@
 </div>
 
 <script>
-function copyPaymentCode(corpId) {
-    const text = document.getElementById('payment-code-' + corpId).innerText;
-    navigator.clipboard.writeText(text);
+// Copies a payment code or amount to the clipboard. An element's data-copy
+// value wins over its shown text — the amount is shown with dots for reading
+// but copied as bare digits, so it pastes into EVE correctly.
+function copyById(elementId) {
+    const element = document.getElementById(elementId);
+    navigator.clipboard.writeText(element.dataset.copy || element.innerText);
 }
 </script>
 {% endblock %}

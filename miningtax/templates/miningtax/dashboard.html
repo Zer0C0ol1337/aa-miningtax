@@ -237,7 +237,7 @@
                 <td>{{ row.entry.type_name }}</td>
                 <td>{{ row.entry.quantity }}</td>
                 <td>{{ row.category }}</td>
-                <td>{{ row.tax_rate }}%</td>
+                <td>{{ row.tax_rate|rate }}%</td>
                 <td>
                     {% if row.excluded %}
                         <span class="badge text-bg-success">{% trans "Excluded" %}</span>

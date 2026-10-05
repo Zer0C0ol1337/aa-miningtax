@@ -95,7 +95,8 @@ class MiningLedgerEntry(models.Model):
     type_name = models.CharField(max_length=255, blank=True)
     quantity = models.BigIntegerField()
     price_per_unit = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-    total_value = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    # Whole ISK (see amounts.py); price_per_unit above keeps its decimals.
+    total_value = models.BigIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -157,7 +158,8 @@ class MoonRental(models.Model):
     )
     moon_name = models.CharField(max_length=255)
     structure_name = models.CharField(max_length=255, blank=True)
-    monthly_fee = models.DecimalField(max_digits=20, decimal_places=2)
+    # Whole ISK (see amounts.py).
+    monthly_fee = models.BigIntegerField()
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -172,10 +174,12 @@ class AllianceBillingRecord(models.Model):
     corporation = models.ForeignKey(EveCorporationInfo, on_delete=models.CASCADE)
     month = models.PositiveSmallIntegerField()
     year = models.PositiveSmallIntegerField()
-    total_mined_value = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-    mining_tax_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-    moon_rental_total = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-    total_due = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    # Whole ISK (see amounts.py). Tax, rental and due are rounded down, so a
+    # stored due is never more than the exact figure a corp may have paid.
+    total_mined_value = models.BigIntegerField(default=0)
+    mining_tax_amount = models.BigIntegerField(default=0)
+    moon_rental_total = models.BigIntegerField(default=0)
+    total_due = models.BigIntegerField(default=0)
     category_snapshot = models.JSONField(null=True, blank=True)
     # Per-member totals for the month, keyed by main character name, each with
     # 'mined', 'tax' and 'character_id' — the same shape calculate_alliance_billing
