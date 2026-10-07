@@ -4,11 +4,18 @@
 
 {% block title %}{% trans "Mining Tax Settings" %}{% endblock %}
 
-{% block content %}
-<div class="container-fluid mt-4">
-  {% include "miningtax/_nav.html" with active="settings" %}
+{% block header_nav_brand %}{% trans "Mining Tax" %}{% endblock header_nav_brand %}
 
-  <div class="d-flex justify-content-between align-items-center mb-4">
+{% block header_nav_collapse_left %}
+    {% include "miningtax/_nav.html" with active="settings" %}
+{% endblock header_nav_collapse_left %}
+
+{% block content %}
+{# Centered like the other pages (Bootstrap container) instead of full width. #}
+<div class="container mt-4">
+  {% include "miningtax/_styles.html" %}
+
+  <div class="text-center mb-4">
     <h2><i class="fas fa-cog"></i> {% trans "Mining Tax Settings" %}</h2>
   </div>
 
@@ -26,7 +33,7 @@
     {% endfor %}
   </datalist>
 
-  <ul class="nav nav-tabs mb-4" id="settingsTabs" role="tablist">
+  <ul class="nav nav-tabs justify-content-center flex-wrap mb-4" id="settingsTabs" role="tablist">
     <li class="nav-item">
       <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-taxrates">
         <i class="fas fa-percent"></i> {% trans "Tax Rates" %}
@@ -539,7 +546,7 @@
     <div class="tab-pane fade" id="tab-treasury">
       <div class="alert alert-info">
         <i class="fas fa-info-circle"></i>
-        {% trans "The configured corporation's wallet is checked for incoming payments. Each corp/month gets a unique payment code (corp ID/month/year) shown on the alliance overview — a payment counts as received when this exact code appears in the wallet journal reason, the amount is sufficient, and the sending corporation matches the open billing record." %}
+        {% trans "The configured corporation's wallet is checked for incoming payments. Each corp/month gets a unique payment code shown on the alliance overview — MT-corp ID-month-year from 10/2026 on, corp ID/month/year for earlier months. A payment counts as received when the reason is exactly this code and the amount covers what is due, whoever sends it." %}
       </div>
 
       <div class="card mb-4">
@@ -1151,6 +1158,26 @@
 // broke tax exemption matching.
 const MOON_API_URL = "{% url 'miningtax:api_moons_for_system' %}";
 
+// When local data has nothing, the server looks the data up from ESI in a
+// background task and answers {pending: true}. Asks again every 2 seconds,
+// for up to a minute, until the task's result is there.
+const LOOKUP_POLL_MS = 2000;
+const LOOKUP_POLL_TRIES = 30;
+
+// Fetches a JSON endpoint, repeating while it answers pending. Returns the
+// last answer; onPending is called before each wait so the page can say so.
+async function fetchUntilReady(url, onPending) {
+  let data = {};
+  for (let attempt = 0; attempt < LOOKUP_POLL_TRIES; attempt++) {
+    const response = await fetch(url);
+    data = await response.json();
+    if (!data.pending) return data;
+    if (onPending) onPending();
+    await new Promise(resolve => setTimeout(resolve, LOOKUP_POLL_MS));
+  }
+  return data;
+}
+
 async function loadMoonsInto(systemSelect, moonSelect, preselect) {
   if (!systemSelect || !moonSelect) return;
 
@@ -1164,12 +1191,25 @@ async function loadMoonsInto(systemSelect, moonSelect, preselect) {
 
   moonSelect.innerHTML = '<option value="">{% trans "Loading moons…" %}</option>';
   moonSelect.disabled = true;
+  // The newest request wins: if the system changes while an earlier one is
+  // still waiting on ESI, that earlier answer is dropped.
+  moonSelect.dataset.request = systemId;
 
   try {
-    const response = await fetch(`${MOON_API_URL}?system_id=${systemId}`);
-    const data = await response.json();
+    const data = await fetchUntilReady(`${MOON_API_URL}?system_id=${systemId}`, function () {
+      if (moonSelect.dataset.request === systemId) {
+        moonSelect.innerHTML = '<option value="">{% trans "Loading moons from ESI…" %}</option>';
+      }
+    });
+    if (moonSelect.dataset.request !== systemId) return;
 
-    moonSelect.innerHTML = '<option value="">{% trans "— Select moon —" %}</option>';
+    if (data.pending) {
+      moonSelect.innerHTML = '<option value="">{% trans "Moons are still loading — pick the system again shortly" %}</option>';
+    } else if (data.reason === 'esi_failed') {
+      moonSelect.innerHTML = '<option value="">{% trans "Could not load moons from ESI — try again in a few minutes" %}</option>';
+    } else {
+      moonSelect.innerHTML = '<option value="">{% trans "— Select moon —" %}</option>';
+    }
     for (const moon of (data.moons || [])) {
       const option = document.createElement('option');
       option.value = moon.name;
@@ -1189,9 +1229,11 @@ async function loadMoonsInto(systemSelect, moonSelect, preselect) {
       moonSelect.appendChild(legacy);
     }
   } catch (err) {
-    moonSelect.innerHTML = '<option value="">{% trans "Could not load moons" %}</option>';
+    if (moonSelect.dataset.request === systemId) {
+      moonSelect.innerHTML = '<option value="">{% trans "Could not load moons" %}</option>';
+    }
   } finally {
-    moonSelect.disabled = false;
+    if (moonSelect.dataset.request === systemId) moonSelect.disabled = false;
   }
 }
 
@@ -1243,12 +1285,20 @@ async function loadSystemStructuresInto(systemSelect, structSelect, preselect) {
   if (!system) { render(observed, null); return; }
 
   structSelect.disabled = true;
+  // The newest request wins, as for the moons above.
+  structSelect.dataset.request = system;
   try {
-    const resp = await fetch(`${SYSTEM_STRUCT_API_URL}?system=${encodeURIComponent(system)}`);
-    const data = await resp.json();
+    const data = await fetchUntilReady(`${SYSTEM_STRUCT_API_URL}?system=${encodeURIComponent(system)}`, function () {
+      if (structSelect.dataset.request === system) {
+        render(observed, '{% trans "— Searching structures via ESI… —" %}');
+      }
+    });
+    if (structSelect.dataset.request !== system) return;
     const names = data.structures || [];
     if (names.length) {
       render(names, null);
+    } else if (data.pending) {
+      render(observed, '{% trans "— Structure search still running, pick the system again shortly —" %}');
     } else {
       const hints = {
         no_search_token: '{% trans "— Nothing known locally and no structure-search token, showing observed names —" %}',
@@ -1258,9 +1308,11 @@ async function loadSystemStructuresInto(systemSelect, structSelect, preselect) {
       render(observed, hints[data.reason] || null);
     }
   } catch (err) {
-    render(observed, '{% trans "— Could not reach the server, showing observed names —" %}');
+    if (structSelect.dataset.request === system) {
+      render(observed, '{% trans "— Could not reach the server, showing observed names —" %}');
+    }
   } finally {
-    structSelect.disabled = false;
+    if (structSelect.dataset.request === system) structSelect.disabled = false;
   }
 }
 

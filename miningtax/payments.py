@@ -8,24 +8,51 @@ from .models import TreasuryConfig, AllianceBillingRecord
 logger = logging.getLogger(__name__)
 
 
-# corp_id / month / year — digits only, optional spaces around the slashes.
-_PAYMENT_CODE_RE = re.compile(r'^\s*(\d+)\s*/\s*(\d{1,2})\s*/\s*(\d{4})\s*$')
+# Payment codes carry the marker MT from 10/2026 on: MT-98806948-10-2026.
+# The bare form corp_id/month/year was also used by another tool, so a transfer
+# meant for that tool could mark a mining tax invoice as paid (and the other way
+# round). Hyphens instead of slashes, so the new code doesn't even contain the
+# old pattern as a substring. Months before 10/2026 keep their bare code: it was
+# already released, and corps may have paid — or still pay — with it.
+CODE_MARKER = 'MT'
+MARKED_CODE_FROM = (2026, 10)
+
+# Bare code: corp_id / month / year — digits only, optional spaces around the slashes.
+_LEGACY_CODE_RE = re.compile(r'^\s*(\d+)\s*/\s*(\d{1,2})\s*/\s*(\d{4})\s*$')
+# Marked code: MT-corp_id-month-year — marker in any case, "-" or "/"
+# between the parts, optional spaces around them.
+_MARKED_CODE_RE = re.compile(
+    r'^\s*' + CODE_MARKER + r'\s*[-/]\s*(\d+)\s*[-/]\s*(\d{1,2})\s*[-/]\s*(\d{4})\s*$',
+    re.IGNORECASE,
+)
 
 
-def parse_payment_code(reason):
+def uses_marked_code(year, month):
+    """True when the payment code of this month carries the MT marker."""
+    return (int(year), int(month)) >= MARKED_CODE_FROM
+
+
+def parse_payment_code(reason, marked=True):
     """
     Reads a transfer reason as a payment code and returns (corp_id, month,
     year) as numbers, or None if the reason isn't one.
 
+    `marked` picks the format: True for MT-corp-month-year (months from
+    10/2026), False for the bare corp/month/year of earlier months. Only the
+    one format is accepted, so a bare code never pays a month that uses the
+    marked one — that is what keeps another tool's identical codes out.
+
     Compared as numbers rather than as text, so the way a pilot happens to
     type it doesn't decide whether a payment is recognised: "9" and "09" are
-    the same month, spaces around the slashes don't matter, and full-width
-    characters from Chinese input methods ("／", "９") are turned into normal
-    ones first. Anything else in the reason — extra words, a second code —
-    still means it isn't a code, so a payment is never matched by accident.
+    the same month, spaces around the separators don't matter, the marker may
+    be written in any case, and full-width characters from Chinese input
+    methods ("／", "９", "ＭＴ") are turned into normal ones first.
+    Anything else in the reason — extra words, a second code — still means it
+    isn't a code, so a payment is never matched by accident.
     """
     text = unicodedata.normalize('NFKC', reason or '')
-    match = _PAYMENT_CODE_RE.match(text)
+    pattern = _MARKED_CODE_RE if marked else _LEGACY_CODE_RE
+    match = pattern.match(text)
     if not match:
         return None
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
@@ -33,11 +60,14 @@ def parse_payment_code(reason):
 
 def payment_code_for(corp_id, month, year):
     """
-    Builds the expected wallet transfer reason code for a corp/month/year,
-    e.g. "98606304/07/2026". Members put this exact string in the reason
-    field when transferring their tax payment, and the payment check
-    matches on it — unique per corp per month, no manual keyword needed.
+    Builds the expected wallet transfer reason code for a corp/month/year:
+    "MT-98606304-10-2026" from 10/2026 on, the bare "98606304/09/2026"
+    before. Members put this exact string in the reason field when
+    transferring their tax payment, and the payment check matches on it —
+    unique per corp per month, no manual keyword needed.
     """
+    if uses_marked_code(year, month):
+        return f"{CODE_MARKER}-{corp_id}-{month:02d}-{year}"
     return f"{corp_id}/{month:02d}/{year}"
 
 
@@ -122,11 +152,13 @@ def _match_payments_against_journal(journal, year, month, open_records, source_l
     .reason and .amount), just sourced differently, so the
     matching rules only need to exist once.
 
-    Matches require the journal reason to be exactly the per-corp code
-    "{corp_id}/{month}/{year}" — read as numbers by parse_payment_code(), so
-    "9" and "09" or a full-width slash don't make a correct payment fail —
-    never just a substring, so one corp's code can't be found inside another
-    string. The amount must be at least what is due — more is fine.
+    Matches require the journal reason to be exactly the per-corp code of the
+    month — "MT-{corp_id}-{month}-{year}" from 10/2026 on, the bare
+    "{corp_id}/{month}/{year}" before — read as numbers by
+    parse_payment_code(), so "9" and "09" or a full-width slash don't make a
+    correct payment fail; never just a substring, so one corp's code can't be
+    found inside another string. The amount must be at least what is due —
+    more is fine.
 
     Who sends the transfer doesn't matter: the code alone names the corp and
     the month, so a CEO paying from his own character, or a member paying for
@@ -136,6 +168,8 @@ def _match_payments_against_journal(journal, year, month, open_records, source_l
     from decimal import Decimal
 
     matched = 0
+    # The format is a property of the month, so it is decided once here.
+    marked = uses_marked_code(year, month)
 
     for record in open_records:
         paying_corp_id = record.corporation.corporation_id
@@ -155,7 +189,7 @@ def _match_payments_against_journal(journal, year, month, open_records, source_l
             # this way (verified against a real case before shipping this).
             amount = Decimal(str(getattr(entry, 'amount', 0) or 0))
 
-            if parse_payment_code(reason) != expected:
+            if parse_payment_code(reason, marked) != expected:
                 continue
             if amount < Decimal(str(record.total_due)):
                 continue

@@ -4,10 +4,16 @@
 
 {% block page_title %}{% trans "Alliance Mining Tax" %}{% endblock %}
 
+{% block header_nav_brand %}{% trans "Mining Tax" %}{% endblock header_nav_brand %}
+
+{% block header_nav_collapse_left %}
+    {% include "miningtax/_nav.html" with active="billing" %}
+{% endblock header_nav_collapse_left %}
+
 {% block content %}
 <div class="container">
 
-    {% include "miningtax/_nav.html" with active="billing" %}
+    {% include "miningtax/_styles.html" %}
 
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h1>🏛️ {% trans "Alliance Billing" %} — {{ month }}/{{ year }}{% if month_frozen %} <span class="badge text-bg-secondary fs-6 align-middle" title="{% trans "The payment code for this month has been released. Its invoices are final and can no longer be recalculated." %}">🔒 {% trans "Final" %}</span>{% endif %}</h1>

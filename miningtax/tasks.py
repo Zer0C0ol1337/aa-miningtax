@@ -313,3 +313,36 @@ def rebuild_billing_snapshot_task(year, month, requested_by=None):
         f' complete: {result}'
     )
     return result
+
+# ─── SETTINGS DROPDOWNS ───────────────────────────────────────────────────────
+# The moon and structure dropdowns on the Settings page read local data first.
+# When that has nothing, the ESI lookup runs here rather than in the web
+# request: the JSON endpoint queues the task, answers "pending", and the page
+# asks again until the result is in the cache (see api_views.py).
+
+
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': ['system_id']})
+def load_system_moons_task(system_id):
+    """Loads a system's moons from ESI into the cache for the moon dropdown."""
+    from django.core.cache import cache
+    from .api_views import FAILED_LOOKUP_TIMEOUT, _moons_from_esi, moons_failed_key
+
+    moons = _moons_from_esi(system_id)
+    if not moons:
+        # Remembered briefly so the page stops waiting and shows a hint.
+        cache.set(moons_failed_key(system_id), True, FAILED_LOOKUP_TIMEOUT)
+        return f'no moons loaded for system {system_id}'
+    return f'{len(moons)} moon(s) loaded for system {system_id}'
+
+
+@shared_task(base=QueueOnce, once={'graceful': True, 'keys': ['system_name', 'user_id']})
+def search_system_structures_task(system_name, user_id):
+    """Runs an officer's ESI structure search for a system, for the structure dropdown."""
+    from django.contrib.auth.models import User
+    from .api_views import search_structures_via_esi
+
+    user = User.objects.filter(pk=user_id).first()
+    if user is None:
+        return f'user {user_id} not found'
+    names, reason = search_structures_via_esi(system_name, user)
+    return f'{len(names)} structure(s) found in {system_name}' + (f' ({reason})' if reason else '')

@@ -1,10 +1,13 @@
 {% load i18n %}
 {% comment %}
-  The plugin's own navigation, included by every page.
+  The plugin's navigation in Alliance Auth's top bar, the way other AA apps do
+  it: each page fills the base template's header_nav_brand and
+  header_nav_collapse_left blocks and includes this file in the latter. It
+  renders <li> items only — the <ul> belongs to base-bs5.html.
 
-  Each page used to carry its own hand-assembled set of links, which drifted:
-  Settings offered no way to the ledger, the pilot view knew only where it came
-  from, and adding a page meant remembering to link it from three others.
+  Blocks cannot be overridden from inside an included template (Django
+  limitation, noted in base-bs5.html itself), so the block tags live in each
+  page; the links live only here, in one place.
 
   Permissions are read from `perms` rather than passed in by each view, so the
   bar works wherever it is included without a matching change in Python.
@@ -12,54 +15,24 @@
 
   Callers pass `active` to mark the current page: {% include "…/_nav.html" with active="settings" %}
 {% endcomment %}
-
-{% comment %}
-  Bootstrap's btn-outline-primary/secondary default colors have poor contrast
-  against Alliance Auth's dark theme — text and border blend almost into the
-  background, making buttons like PDF downloads and Reset-to-Unpaid across
-  every page of this plugin nearly unreadable. Fixed here once, in the file
-  every page already includes, rather than copied into each page separately
-  — a copy-paste version of this exact fix already went missing once this
-  session when a template got rebuilt from an older upload.
-
-  Scoped to [data-theme="darkly"] — confirmed via the browser's own DOM
-  inspector against a live page (<html data-theme="darkly">), NOT Bootstrap
-  5.3's native [data-bs-theme="dark"] mechanism as first assumed: Alliance
-  Auth themes via Bootswatch, a different attribute name and value entirely,
-  which is why an earlier version of this fix silently never matched
-  anything. Light mode — which already reads fine — is completely untouched.
-{% endcomment %}
-<style>
-[data-theme="darkly"] .btn-outline-primary,
-[data-theme="darkly"] .btn-outline-secondary {
-    color: #e9ecef;
-    border-color: #adb5bd;
-}
-[data-theme="darkly"] .btn-outline-primary:hover,
-[data-theme="darkly"] .btn-outline-secondary:hover {
-    color: #fff;
-    background-color: #495057;
-    border-color: #adb5bd;
-}
-</style>
-
-<div class="d-flex gap-2 flex-wrap mb-3">
-  <a href="{% url 'miningtax:dashboard' %}"
-     class="btn btn-sm {% if active == 'dashboard' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
-    ⛏️ {% trans "My Mining" %}
+<li class="nav-item">
+  <a class="nav-link{% if active == 'dashboard' %} active{% endif %}" href="{% url 'miningtax:dashboard' %}">
+    <i class="fas fa-cubes fa-fw"></i> {% trans "My Mining" %}
   </a>
+</li>
 
-  {% if perms.miningtax.corp_billing or perms.miningtax.mining_officer %}
-  <a href="{% url 'miningtax:alliance_overview' %}"
-     class="btn btn-sm {% if active == 'billing' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
-    🏛️ {% trans "Billing" %}
+{% if perms.miningtax.corp_billing or perms.miningtax.mining_officer %}
+<li class="nav-item">
+  <a class="nav-link{% if active == 'billing' %} active{% endif %}" href="{% url 'miningtax:alliance_overview' %}">
+    <i class="fas fa-file-invoice-dollar fa-fw"></i> {% trans "Billing" %}
   </a>
-  {% endif %}
+</li>
+{% endif %}
 
-  {% if perms.miningtax.mining_officer %}
-  <a href="{% url 'miningtax:settings' %}"
-     class="btn btn-sm {% if active == 'settings' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
-    ⚙️ {% trans "Settings" %}
+{% if perms.miningtax.mining_officer %}
+<li class="nav-item">
+  <a class="nav-link{% if active == 'settings' %} active{% endif %}" href="{% url 'miningtax:settings' %}">
+    <i class="fas fa-cog fa-fw"></i> {% trans "Settings" %}
   </a>
-  {% endif %}
-</div>
+</li>
+{% endif %}

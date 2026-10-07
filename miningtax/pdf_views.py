@@ -11,7 +11,7 @@ from allianceauth.eveonline.models import EveCorporationInfo
 
 from .models import MoonRental, AllianceBillingRecord
 from .pdf_export import generate_corp_invoice_pdf
-from .views import check_access, has_officer_access, own_corporation_id, is_corp_scoped
+from .views import check_access, has_officer_access, corp_scope_for, outside_corp_scope
 
 
 def _record_to_corp_data(record):
@@ -88,7 +88,7 @@ def download_corp_pdf(request, corp_id):
     # CEOs reach officer views through the automatic bypass rather than a
     # granted permission, so their scope has to be enforced here as well —
     # otherwise the invoice of any corp is one edited URL away.
-    if is_corp_scoped(request.user) and own_corporation_id(request.user) != corp_id:
+    if outside_corp_scope(request.user, corp_id):
         return HttpResponse('Not permitted.', status=403)
 
     try:
@@ -140,8 +140,11 @@ def download_all_corps_zip(request):
 
     # Same reasoning as the single invoice: a CEO gets a ZIP of their own corp
     # rather than of every corp in the alliance.
-    if is_corp_scoped(request.user):
-        own_corp = own_corporation_id(request.user)
+    # Fails closed: no resolvable own corporation means no ZIP at all.
+    scoped, own_corp = corp_scope_for(request.user)
+    if scoped:
+        if own_corp is None:
+            return HttpResponse('Not permitted: no corporation found for your account.', status=403)
         records = records.filter(corporation__corporation_id=own_corp)
 
     if not records.exists():

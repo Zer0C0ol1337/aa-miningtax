@@ -15,6 +15,7 @@ from .models import (
     TreasuryConfig, SovFilterConfig, JaniceConfig, TaxExemption, SovSystem,
 )
 from .billing import calculate_entry_tax, is_month_frozen, stored_corp_join_date
+from .esi_guard import no_esi
 from .services import (
     sync_character_mining, update_market_prices, sync_all_corp_observers,
     STRUCTURE_ID_THRESHOLD,
@@ -81,6 +82,29 @@ def is_corp_scoped(user):
     return user.has_perm('miningtax.corp_billing')
 
 
+def corp_scope_for(user):
+    """
+    (scoped, corp_id) for the billing views: scoped is True for a corp_billing
+    holder without mining_officer, corp_id is the corporation they are limited
+    to. corp_id can be None for a scoped user — no main character and no
+    registered character with a corporation. Callers must then deny access
+    rather than skip the restriction: "no corporation" must never read as
+    "no limit".
+    """
+    if not is_corp_scoped(user):
+        return False, None
+    return True, own_corporation_id(user)
+
+
+def outside_corp_scope(user, corporation_id):
+    """
+    True when a corp-scoped user may not see this corporation's data. Fails
+    closed: a scoped user whose own corporation can't be resolved sees none.
+    """
+    scoped, own_corp = corp_scope_for(user)
+    return scoped and (own_corp is None or own_corp != corporation_id)
+
+
 def has_full_officer_access(user):
     """Real officer access — permission or superuser only, not the CEO
     auto-bypass. Used for Settings and alliance-wide actions."""
@@ -107,7 +131,10 @@ def check_access(test_func):
             if not test_func(request.user):
                 raise PermissionDenied
             try:
-                return view_func(request, *args, **kwargs)
+                # No view may wait on ESI: the ESI fallbacks inside the tax
+                # calculation stay off for the whole request (esi_guard.py).
+                with no_esi():
+                    return view_func(request, *args, **kwargs)
             except Exception as e:
                 logger.error(
                     f'Unexpected error in {view_func.__name__} '
@@ -388,8 +415,12 @@ def alliance_overview(request):
     restricted_to_corp = None
     totals = {'mined': totals_mined, 'tax': totals_tax, 'rental': totals_rental, 'outstanding': totals_outstanding}
 
-    if is_corp_scoped(request.user):
-        restricted_to_corp = own_corporation_id(request.user)
+    scoped, restricted_to_corp = corp_scope_for(request.user)
+    if scoped:
+        # With no resolvable own corporation the filter below keeps nothing —
+        # the page shows no corp at all rather than the whole alliance.
+        if restricted_to_corp is None:
+            messages.warning(request, 'No corporation found for your account — billing can only be shown for your own corporation.')
         corps_with_status = {
             cid: cdata for cid, cdata in corps_with_status.items()
             if cid == restricted_to_corp
@@ -1187,8 +1218,9 @@ def pilot_detail(request, character_id):
             messages.error(request, '❌ You can only view your own characters.')
             return redirect('miningtax:dashboard')
 
-        restricted_to_corp = own_corporation_id(request.user) if is_corp_scoped(request.user) else None
-        if restricted_to_corp and main.corporation_id != restricted_to_corp:
+        # Fails closed: a corp-scoped officer whose own corporation can't be
+        # resolved sees no other pilot at all, instead of every pilot.
+        if outside_corp_scope(request.user, main.corporation_id):
             messages.error(request, '❌ You can only view pilots of your own corporation.')
             return redirect('miningtax:alliance_overview')
 

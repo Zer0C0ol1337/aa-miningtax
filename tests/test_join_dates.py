@@ -75,6 +75,7 @@ def world(monkeypatch):
                              '_corp_join_failed_key', '_stored_join_is_current', '_fetch_corp_join_date_from_esi',
                              'get_corp_join_date', 'stored_corp_join_date', 'refresh_corp_join_dates'},
               {'__name__': 'miningtax.billing', '__package__': 'miningtax', 'cache': cache,
+               'esi_allowed': lambda: True,
                'logger': types.SimpleNamespace(warning=lambda m: None),
                'AllianceBillingRecord': types.SimpleNamespace(objects=types.SimpleNamespace(
                    values_list=lambda *a, **k: [1]))})
@@ -101,3 +102,16 @@ def test_alliance_switch_triggers_a_new_lookup(world):
     cache.clear()
     assert world.ns['refresh_corp_join_dates']() == 1
     assert world.ns['stored_corp_join_date'](1) == datetime.date(2026, 10, 1)
+
+
+def test_a_web_request_never_asks_esi_and_marks_no_failure(world):
+    # Inside a page (no_esi) an unknown join date stays unknown for now: no ESI
+    # call, and no failure mark that would hold back the nightly lookup.
+    world.ns['esi_allowed'] = lambda: False
+    assert world.ns['get_corp_join_date'](1) is None
+    assert world.calls == []
+    assert cache.get(world.ns['_corp_join_failed_key'](1)) is None
+
+    world.ns['esi_allowed'] = lambda: True
+    assert world.ns['get_corp_join_date'](1) == datetime.date(2018, 3, 8)
+    assert world.calls == [1]

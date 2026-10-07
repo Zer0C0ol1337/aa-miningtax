@@ -28,7 +28,7 @@ from .models import MiningLedgerEntry, AllianceBillingRecord
 from .pdf_views import _record_to_corp_data
 from .views import (
     check_access, has_basic_access, has_officer_access,
-    own_corporation_id, is_corp_scoped, _corp_for_entry,
+    corp_scope_for, outside_corp_scope, _corp_for_entry,
 )
 
 
@@ -112,8 +112,9 @@ def export_pilot_ledger(request, character_id):
     if main.pk not in own_character_pks:
         if not has_officer_access(request.user):
             return HttpResponse('Not permitted.', status=403)
-        restricted = own_corporation_id(request.user) if is_corp_scoped(request.user) else None
-        if restricted and main.corporation_id != restricted:
+        # Fails closed: a corp-scoped user whose own corporation can't be
+        # resolved may export no other pilot, instead of every pilot.
+        if outside_corp_scope(request.user, main.corporation_id):
             return HttpResponse('Not permitted.', status=403)
 
     try:
@@ -155,7 +156,11 @@ def export_alliance_billing(request):
     year = int(request.GET.get('year', today.year))
     month = int(request.GET.get('month', today.month))
 
-    restricted = own_corporation_id(request.user) if is_corp_scoped(request.user) else None
+    # Fails closed: a corp-scoped user whose own corporation can't be resolved
+    # gets nothing — never the whole alliance's billing.
+    scoped, restricted = corp_scope_for(request.user)
+    if scoped and restricted is None:
+        return HttpResponse('Not permitted: no corporation found for your account.', status=403)
 
     records = AllianceBillingRecord.objects.filter(
         year=year, month=month
@@ -165,7 +170,7 @@ def export_alliance_billing(request):
     if not records.exists():
         return HttpResponse('No invoices exist for this month yet — a mining officer can create them with Rebuild Snapshot.', status=404)
 
-    if restricted:
+    if scoped:
         records = records.filter(corporation__corporation_id=restricted)
 
     def rows():

@@ -121,7 +121,7 @@ def badge_count_for(user):
 
 
 # Single sidebar entry, leading to the personal dashboard. Billing and Settings
-# are reached through the buttons inside the tool. Carries a badge with the
+# are reached through the plugin's own entries in the top bar. Carries a badge with the
 # number of open invoices for officers and corp billing holders.
 class MiningTaxMenuItem(MenuItemHook):
     def __init__(self):

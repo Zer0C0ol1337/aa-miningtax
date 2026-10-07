@@ -1,6 +1,6 @@
 # Mining Tax — Alliance Auth Plugin
 
-**Version 0.10.26**
+**Version 0.10.27**
 
 A Django app for Alliance Auth to manage EVE Online mining tax billing across alliance corporations.
 
@@ -186,7 +186,7 @@ point at them, so renaming would quietly void every existing assignment.
 
 Superusers (`is_superuser`) always have full access regardless of assigned permissions. Staff status alone (`is_staff`) grants nothing here.
 
-**`corp_billing` is scoped to one corporation** — the one the holder's main character belongs to. That applies everywhere the same way: the billing page and its summary figures, the PDF invoice, the all-corps ZIP (which contains only their corp) and the CSV export — all read-only. It does **not** grant marking an invoice paid or unpaid, Settings, or any alliance-wide action — those, as well as manual sync, Check Payments Now and editing tax rates, moons or treasury, all need `mining_officer`. A corp that could mark its own invoice paid could clear its bill without transferring anything.
+**`corp_billing` is scoped to one corporation** — the one the holder's main character belongs to. That applies everywhere the same way: the billing page and its summary figures, the PDF invoice, the all-corps ZIP (which contains only their corp) and the CSV export — all read-only. If no corporation can be found for the holder (no main character and no registered character with a corporation), they see no billing data at all rather than the whole alliance. It does **not** grant marking an invoice paid or unpaid, Settings, or any alliance-wide action — those, as well as manual sync, Check Payments Now and editing tax rates, moons or treasury, all need `mining_officer`. A corp that could mark its own invoice paid could clear its bill without transferring anything.
 
 The plugin deliberately makes no assumptions about who deserves which access. Earlier versions detected corp CEOs from `EveCorporationInfo.ceo_id` and granted them corp access automatically; that meant the plugin decided rather than the Auth admin, the grant appeared nowhere in the permission UI and could not be revoked, and it came along with any alt who happened to be CEO of an unrelated one-man corp. Assign `corp_billing` to whoever should have it — CEOs, directors, a mining coordinator — through the usual groups.
 
@@ -199,7 +199,7 @@ The plugin deliberately makes no assumptions about who deserves which access. Ea
 
 ## Settings UI
 
-Reachable at `/miningtax/settings/` (requires the real `mining_officer` permission or superuser — CEO auto-access does not reach this page). Six tabs, each corporation dropdown a searchable combobox (click, type to filter, pick from the results) rather than a plain scrollable list:
+Reachable at `/miningtax/settings/` through the **Settings** entry in the top bar (requires the `mining_officer` permission or superuser). The page is centered like the other pages. Eight tabs, each corporation dropdown a searchable combobox (click, type to filter, pick from the results) rather than a plain scrollable list:
 
 ### Tax Rates
 Also imports the full ore list from ESI on demand, reports how many mined types still have no category, and lets you create a rate for a category that has none — those are billed at the Default rate until you do.
@@ -217,10 +217,20 @@ A corp renting a moon pays a flat monthly fee; mining there becomes tax-free for
 Moons can be marked `Event` (tax-free) or `Public` (normally taxed). Matching is done via a case-insensitive substring check against the ledger's `solar_system_name`. An optional **Structure Name** narrows a tax-free moon to a single structure when several structures share the same solar system.
 
 ### Treasury
-Configure which corporation's wallet is monitored for incoming tax payments, and which wallet division (1–7). Each corp/month gets its own exact payment reference code — `{corp_id}/{month:02d}/{year}` — shown with a copy button on the alliance overview page so members know exactly what to put in the transfer's reason field. A payment is matched when, in the treasury corp's wallet journal:
-1. The reason is an EXACT match for that corp/month's code (not a substring, so one corp's code can't accidentally be contained in another's transfer text)
-2. The sending party's ID matches the corporation on the open billing record (a transfer from an individual character's personal wallet, even one belonging to that corp, is not a match — it must be a corp-wallet transfer)
-3. The amount is at least the invoice's total due
+Configure which corporation's wallet is monitored for incoming tax payments, and which wallet division (1–7). Each corp/month gets its own exact payment reference code, shown with a copy button on the alliance overview page so members know exactly what to put in the transfer's reason field:
+
+| Months | Payment code | Example |
+|---|---|---|
+| from 10/2026 | `MT-{corp_id}-{month:02d}-{year}` | `MT-98806948-10-2026` |
+| up to 09/2026 | `{corp_id}/{month:02d}/{year}` | `98806948/09/2026` |
+
+The `MT` marker was added in 0.10.27 because another tool used the same bare `corp_id/month/year` pattern, so a transfer meant for that tool could mark a mining tax invoice as paid. The marked code uses hyphens, so it doesn't contain the bare pattern even as a substring. Months up to 09/2026 keep the bare code they were released with, so payments already made — or still to be made — with it are recognised as before. Each month accepts only its own format.
+
+A payment is matched when, in the treasury corp's wallet journal:
+1. The reason is exactly that corp/month's code and nothing else (not a substring, so one corp's code can't accidentally be contained in another's transfer text). It is read as numbers, so `9` and `09` are the same month; spaces around the separators, the case of `MT`, `-` or `/` between the parts, and full-width characters from Chinese input methods don't matter
+2. The amount is at least the invoice's total due — more is fine
+
+Who sends the transfer doesn't matter: the code alone names the corp and the month, so a CEO paying from his own character, or a member paying for the corp, is recognised like a transfer from the corp wallet.
 
 Requires a character of the treasury corp — any character with corp-wallet access, not specifically a director or accountant — to be registered in Alliance Auth with a valid `esi-wallet.read_corporation_wallets.v1` token. This is a plugin-level ESI token via Alliance Auth's own token system, independent of Corptools; Corptools does not need to be installed for payment checking to work.
 
@@ -294,13 +304,30 @@ when adding a moon and when editing one.
 instead of all ~8000 systems in EVE. Configure a reference corporation on the
 Systems tab first, otherwise the dropdown stays empty.
 
-**Moons** are fetched from ESI for the chosen system and cached for 30 days —
-the first pick of a system takes a moment, everything after that is instant.
+**Moons** come from eve_sde (installed with Corptools) or eveuniverse — local
+data, instant. Only for a system neither of them knows are they loaded from ESI,
+in a background task (`load_system_moons_task`), and cached for 30 days; the
+dropdown shows "Loading moons from ESI…" and fills in by itself once the task is
+done, usually within seconds.
 
-**Structures** follow the chosen solar system: picking it searches for
-structures the officer can dock at, which needs `esi-search.search_structures.v1`
-and no corporation role. Names already seen in mining data remain available as a
-fallback, so the field stays usable if the search returns nothing.
+**Structures** follow the chosen solar system: Corptools' structure and location
+data and the names already seen in mining data come first. Only when none of them
+knows a structure there does the officer's own ESI structure search run, in a
+background task (`search_system_structures_task`); it finds structures the
+officer can dock at, needs `esi-search.search_structures.v1` and no corporation
+role, and its result is kept for six hours. Names already seen in mining data
+remain available as a fallback, so the field stays usable if the search returns
+nothing.
+
+Neither dropdown calls ESI inside the web request: the page asks again every two
+seconds, for up to a minute, until the task's result is there. Both tasks show up
+in the task monitor.
+
+The same goes for every other page: no view of the plugin waits on ESI. The tax
+figures on the dashboard, the pilot detail page and the pilot CSV are worked out
+from local data only; an ore type, alliance join date or character corp history
+not known locally yet is filled in by the nightly sync or Rebuild Snapshot, which
+are the only places invoices are calculated.
 
 Earlier versions also offered a structure-corp picker, listing what a corporation
 owns regardless of docking access. It is gone: every corp endpoint ESI provides
@@ -404,7 +431,7 @@ All routes require a login. Every action that changes something is a POST with a
 | `/miningtax/alliance/rebuild-snapshot/` | Rebuild a non-final month (POST, background task) | `mining_officer` |
 | `/miningtax/alliance/paid/<corp_id>/`, `/unpaid/<corp_id>/` | Mark an invoice paid or unpaid (POST) | `mining_officer` |
 | `/miningtax/settings/` and every `/miningtax/settings/…` action | Settings page and its actions (POST) | `mining_officer` |
-| `/miningtax/api/moons/`, `/miningtax/api/system-structures/` | Moons / structures of a system (JSON, for the dropdowns) | `mining_officer` |
+| `/miningtax/api/moons/`, `/miningtax/api/system-structures/` | Moons / structures of a system (JSON, for the dropdowns; `"pending": true` while an ESI lookup runs as a task) | `mining_officer` |
 
 ---
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.10.27] - 2026-10-07
+
+### Changed
+- **Payment codes carry the marker `MT` from 10/2026 on: `MT-98806948-10-2026`.** Another tool used the same bare `corp_id/month/year` pattern, so a transfer meant for that tool could mark a mining tax invoice as paid, and the other way round. The new code uses hyphens instead of slashes, so it doesn't contain the old pattern even as a substring
+- **Months up to 09/2026 keep their bare code** (`98806948/09/2026`). It was already released, and corps may have paid — or still pay — with it, so those months are shown and checked exactly as before
+- **Each month accepts only its own format:** a bare code never pays a month from 10/2026 on, and a marked code never pays an earlier month. The marked code is read as tolerantly as the old one — `9` and `09`, spaces around the separators, `-` or `/` between the parts, `MT` in any case and full-width characters all work — and just as strictly: anything else in the reason means it isn't a payment
+- **The moon and structure dropdowns on the Settings page no longer call ESI inside the web request.** Local data still answers at once (eve_sde/eveuniverse for moons, Corptools and mining data for structures). When it has nothing, the ESI lookup now runs as a Celery task — `load_system_moons_task` and `search_system_structures_task`, both `QueueOnce` and visible in the task monitor — and the endpoint answers `{"pending": true}`; the page asks again every two seconds, for up to a minute, and fills the dropdown once the result is there. A failed moon lookup is remembered for five minutes, so the page shows a hint instead of waiting. An officer without a structure-search token gets the hint at once, without a task. If the system is changed while a lookup is running, the older answer is dropped
+- **No page waits on ESI any more.** The tax calculation behind the dashboard, the pilot detail page and the pilot CSV has three ESI fallbacks — an ore type no local source knows, a corporation's alliance join date not stored yet, a character's corp history Corptools doesn't have. Every view now runs with these fallbacks switched off (`esi_guard.py`): inside a page, "not known yet" is shown as such (Default rate, no join-date exclusion) and is not cached as a final answer, so the nightly sync and Rebuild Snapshot, which run as tasks, still look it up. Invoices are only ever calculated by those tasks, so they are not affected
+
+- **Navigation in the top bar, like other Alliance Auth apps.** My Mining, Billing and Settings are now entries in Alliance Auth's top bar next to "Mining Tax" (the `header_nav_brand` / `header_nav_collapse_left` blocks of `base-bs5.html`) instead of a row of buttons at the top of each page; the current page is marked active. Who sees which entry is unchanged (`basic_access` / `corp_billing` / `mining_officer`). The dark-theme contrast fix for outline buttons, which lived in the same include, moved to `_styles.html`
+- **The Settings page is centered** like the other pages, with the title and the tab bar centered above the content, instead of spanning the full width from the left
+
+### Security
+- **A `corp_billing` holder whose own corporation couldn't be resolved saw the whole alliance** in the alliance CSV export, the pilot CSV export and the pilot detail page. The check read "no corporation found" (no main character and no registered character with a corporation) as "no limit". All corp-scoped views now go through one helper and **fail closed**: such a user gets no data — a 403 for the exports and the ZIP, a notice and an empty list on the billing page. Officers and superusers are not affected
+
+### Fixed
+- README and the Treasury hint on the Settings page still said a payment had to come from the corp's own wallet. That rule was dropped in 0.10.25: the code alone names the corp and the month, whoever sends the transfer
+- README said moons were fetched from ESI; they have come from eve_sde/eveuniverse first since 0.10.18
+- README spoke of six Settings tabs (there are eight) and of a CEO auto-access that was removed long ago
+
+### Added
+- Tests for the marked code, the switch-over month, the code length, the corp scope, the dropdown lookups, the ESI guard and the templates (87 tests in total)
+
+
 
 ## [0.10.26] - 2026-10-05
 

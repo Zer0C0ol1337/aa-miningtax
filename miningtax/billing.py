@@ -6,6 +6,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from .amounts import whole_isk_down, whole_isk_nearest
+from .esi_guard import esi_allowed
 from .models import (
     OreCategory, TaxRate, TaxRateHistory, FleetSession, AllianceMoon, MoonRental,
     AllianceBillingRecord, TaxExemption, OreCategoryRule, TaxableScope,
@@ -354,6 +355,11 @@ def get_ore_category(type_id):
     if not group_name:
         name, group_name = _type_and_group_from_eveuniverse(type_id)
     if not group_name:
+        if not esi_allowed():
+            # Inside a web request: no ESI, and no "unclassifiable" mark either —
+            # the type isn't known locally yet, which the nightly sync can still
+            # change. The page shows the Default rate for now.
+            return 'Default'
         name, group_name = _type_and_group_from_esi(type_id)
 
     derived = category_from_rules(name, group_name) or classify_group_name(group_name)
@@ -657,6 +663,11 @@ def get_corp_join_date(corporation_id):
     if cache.get(_corp_join_failed_key(corporation_id)):
         return row.joined if row is not None else None
 
+    # Inside a web request: answer from what is stored, without ESI and without
+    # marking a failed lookup — the nightly sync and Rebuild Snapshot fill it.
+    if not esi_allowed():
+        return row.joined if row is not None else None
+
     ok, joined, alliance_id = _fetch_corp_join_date_from_esi(corporation_id)
     if not ok:
         cache.set(_corp_join_failed_key(corporation_id), True, CORP_JOIN_DATE_RETRY_TTL)
@@ -783,6 +794,11 @@ def get_character_join_date(character):
     if from_corptools is not None:
         cache.set(cache_key, from_corptools, CHARACTER_JOIN_DATE_CACHE_TTL)
         return from_corptools
+
+    # Inside a web request: unknown for now, and not cached as 'none' — the
+    # billing tasks, which may ask ESI, still look it up.
+    if not esi_allowed():
+        return None
 
     from .services import _get_esi_client
     from esi.exceptions import HTTPNotModified

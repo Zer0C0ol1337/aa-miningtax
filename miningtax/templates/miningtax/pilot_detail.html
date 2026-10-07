@@ -4,6 +4,12 @@
 
 {% block page_title %}{% trans "Pilot Detail" %}{% endblock %}
 
+{% block header_nav_brand %}{% trans "Mining Tax" %}{% endblock header_nav_brand %}
+
+{% block header_nav_collapse_left %}
+    {% include "miningtax/_nav.html" %}
+{% endblock header_nav_collapse_left %}
+
 {% block content %}
 <style>
   /* Highlighted rows (tax-excluded entries) bring their own foreground and
@@ -22,7 +28,7 @@
 
 <div class="container-fluid">
 
-  {% include "miningtax/_nav.html" %}
+  {% include "miningtax/_styles.html" %}
 
   <div class="d-flex justify-content-between align-items-center mb-3">
     <div>

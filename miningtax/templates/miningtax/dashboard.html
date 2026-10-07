@@ -4,6 +4,12 @@
 
 {% block page_title %}{% trans "Mining Tax" %}{% endblock %}
 
+{% block header_nav_brand %}{% trans "Mining Tax" %}{% endblock header_nav_brand %}
+
+{% block header_nav_collapse_left %}
+    {% include "miningtax/_nav.html" with active="dashboard" %}
+{% endblock header_nav_collapse_left %}
+
 {% block content %}
 <style>
   /* Highlighted rows (tax-excluded entries) bring their own foreground and
@@ -46,7 +52,7 @@
     </div>
     {% endif %}
 
-    {% include "miningtax/_nav.html" with active="dashboard" %}
+    {% include "miningtax/_styles.html" %}
 
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h1>⛏️ {% trans "Mining Tax" %} — {{ month }}</h1>
